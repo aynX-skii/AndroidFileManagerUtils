@@ -3,7 +3,7 @@
 协议细节见 [PROTOCOL.md](PROTOCOL.md)，本文讲 Linux 端**实际是怎么实现的**：模块划分、
 关键路径的取舍、哪些地方容易踩坑、怎么验证。
 
-代码在仓库外的同级目录 [`afmu-linux/`](../../afmu-linux)，用法见它自己的 README。
+代码在另一个仓库 [aynX-skii/afmu-linux](https://github.com/aynX-skii/afmu-linux)，用法见它自己的 README。
 
 > **历史说明**：本文最初是一份蓝图，规划的是「纯标准库、单文件、`chmod +x` 就能跑」的
 > Python CLI（`afmu ls/get/put/serve`）。实际落地时改成了 **Qt 6 + Qt Quick 桌面应用**：
