@@ -13,15 +13,21 @@ class Prefs(context: Context) {
         get() = sp.getInt(KEY_PORT, DEFAULT_PORT)
         set(value) = sp.edit().putInt(KEY_PORT, value).apply()
 
-    /** Shared secret required on every request. Regenerating it locks out old clients. */
+    /**
+     * Shared secret required on every request. Regenerating it locks out old clients.
+     *
+     * Minting on first read has to be atomic across the whole process, not just this
+     * instance: the UI and the service each hold their own [Prefs], so two first reads can
+     * race and generate two tokens. The loser's is overwritten a moment later, and whoever
+     * was already shown it is authenticating with a value the server no longer accepts.
+     */
     var token: String
-        get() {
-            sp.getString(KEY_TOKEN, null)?.let { return it }
-            val fresh = newToken()
-            sp.edit().putString(KEY_TOKEN, fresh).apply()
-            return fresh
+        get() = synchronized(TOKEN_LOCK) {
+            sp.getString(KEY_TOKEN, null) ?: newToken().also {
+                sp.edit().putString(KEY_TOKEN, it).apply()
+            }
         }
-        set(value) = sp.edit().putString(KEY_TOKEN, value).apply()
+        set(value) = synchronized(TOKEN_LOCK) { sp.edit().putString(KEY_TOKEN, value).apply() }
 
     var deviceName: String
         get() = sp.getString(KEY_NAME, null) ?: "${Build.MANUFACTURER} ${Build.MODEL}".trim()
@@ -88,6 +94,9 @@ class Prefs(context: Context) {
     companion object {
         const val DEFAULT_PORT = 8765
         const val DISCOVERY_PORT = 8766
+
+        /** Process-wide: every [Prefs] instance shares the one underlying preferences file. */
+        private val TOKEN_LOCK = Any()
 
         private const val KEY_PORT = "port"
         private const val KEY_TOKEN = "token"

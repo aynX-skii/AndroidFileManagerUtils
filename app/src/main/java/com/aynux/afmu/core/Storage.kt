@@ -19,6 +19,12 @@ import java.io.OutputStream
  */
 object Storage {
 
+    /** Suffix of a file still being written; must match afmu::kPartSuffix on the Linux side. */
+    private const val PART_SUFFIX = ".afmu-part"
+
+    /** Makes each in-flight partial file unique; see [FileSink]. */
+    private val partialIds = java.util.concurrent.atomic.AtomicLong()
+
     data class Root(val name: String, val dir: File)
 
     /** Browsable roots. The empty path "/" lists exactly these. */
@@ -116,7 +122,13 @@ object Storage {
     }
 
     private class FileSink(private val target: File) : Sink {
-        private val partial = File(target.parentFile, target.name + ".afmu-part")
+        // Named after this sink, not after the target: two uploads of the same name arriving
+        // at once both get the same target from [uniqueFile] — it only checks the final name,
+        // which does not exist yet — and would then interleave into one partial file and each
+        // commit it. Nothing resumes from a server-side partial, so a per-sink name costs
+        // nothing (PROTOCOL.md §4.3).
+        private val partial =
+            File(target.parentFile, "${target.name}.${partialIds.incrementAndGet().toString(16)}$PART_SUFFIX")
         private var committed = false
         override val stream: OutputStream = FileOutputStream(partial)
         override val displayPath: String get() = target.absolutePath

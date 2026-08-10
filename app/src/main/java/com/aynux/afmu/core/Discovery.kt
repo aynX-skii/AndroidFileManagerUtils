@@ -147,7 +147,9 @@ class Discovery(
 
         private fun parse(host: String, raw: String): Peer? {
             val json = runCatching { JSONObject(raw.trim()) }.getOrNull() ?: return null
-            if (!json.has("afmu")) return null
+            // Missing field: not one of ours. A major version we do not know: it may mean
+            // anything at all, so refuse rather than guess (PROTOCOL.md §7).
+            if (json.optInt("afmu", 0) != HttpServer.PROTOCOL_VERSION) return null
             val port = json.optInt("port", 0)
             if (port <= 0) return null
             return Peer(

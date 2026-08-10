@@ -59,9 +59,9 @@ object AuthRequests {
 
         val request = Request(
             id = newId(),
-            code = code.ifBlank { "----" },
-            name = name.ifBlank { host },
-            os = os,
+            code = confirmCode(code),
+            name = displayText(name, 64).ifBlank { host },
+            os = displayText(os, 16),
             host = host,
             port = port,
             createdAt = System.currentTimeMillis(),
@@ -115,6 +115,18 @@ object AuthRequests {
         decided.entries.removeAll { now - it.value.createdAt > RESULT_RETENTION_MS }
         blocked.entries.removeAll { it.value < now }
     }
+
+    /**
+     * Whatever the caller sent lands on the screen and in a notification, and this is the one
+     * endpoint anyone on the LAN can reach without a token. Strip control characters and cap
+     * the length so nobody can push the buttons off the dialog with a name of their choosing.
+     */
+    private fun displayText(raw: String, max: Int): String =
+        raw.filter { !it.isISOControl() }.trim().take(max)
+
+    /** The requester picks the code and both screens show it; anything else is not a code. */
+    private fun confirmCode(raw: String): String =
+        if (raw.length == 4 && raw.all { it in '0'..'9' }) raw else "----"
 
     private fun newId(): String {
         val bytes = ByteArray(16)

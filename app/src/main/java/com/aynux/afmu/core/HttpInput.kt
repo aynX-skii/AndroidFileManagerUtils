@@ -6,6 +6,15 @@ import java.io.InputStream
 import java.io.OutputStream
 
 /**
+ * The peer stopped sending before the body was complete.
+ *
+ * Kept distinct from a plain [IOException] because the two mean opposite things to the caller:
+ * a write that failed is a server problem (500), a body that ran out is the client's (400).
+ * Either way the request must never be answered with `ok: true` — PROTOCOL.md §3.4.
+ */
+class TruncatedBody(message: String) : IOException(message)
+
+/**
  * Buffered reader over a socket stream. It can read protocol lines and copy raw bytes up
  * to a delimiter, which is everything HTTP framing and multipart parsing need. Written by
  * hand so the app pulls in no networking dependency at all.
@@ -109,7 +118,7 @@ class HttpInput(private val src: InputStream, capacity: Int = 1 shl 16) {
         var left = length
         var done = 0L
         while (left > 0) {
-            if (buffered() == 0 && !fill()) throw IOException("stream ended $left bytes early")
+            if (buffered() == 0 && !fill()) throw TruncatedBody("stream ended $left bytes early")
             val n = minOf(buffered().toLong(), left).toInt()
             out.write(buf, pos, n)
             pos += n
@@ -123,7 +132,7 @@ class HttpInput(private val src: InputStream, capacity: Int = 1 shl 16) {
     fun copyChunked(out: OutputStream, onProgress: ((Long) -> Unit)? = null) {
         var done = 0L
         while (true) {
-            val header = readLine() ?: throw IOException("truncated chunk header")
+            val header = readLine() ?: throw TruncatedBody("truncated chunk header")
             val size = header.substringBefore(';').trim().toLongOrNull(16)
                 ?: throw IOException("bad chunk header: $header")
             if (size == 0L) {

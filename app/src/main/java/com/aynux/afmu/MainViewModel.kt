@@ -361,19 +361,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
         // One poll a second, and the deadline is ours as much as theirs: a peer that stops
         // answering must not leave this dialog up forever.
-        repeat(AuthRequests.TIMEOUT_SEC) { elapsed ->
+        //
+        // The deadline is wall clock rather than a count of rounds. Each round also waits on
+        // a request that may itself take seconds, so counting iterations would drift well
+        // past the timeout the peer is enforcing on the very same request.
+        val deadline = System.currentTimeMillis() + AuthRequests.TIMEOUT_SEC * 1000L
+        while (true) {
             delay(1000)
-            _state.update {
-                it.copy(outgoingAuth = it.outgoingAuth?.copy(
-                    remaining = (AuthRequests.TIMEOUT_SEC - elapsed - 1).coerceAtLeast(0)
-                ))
-            }
+            val remaining = ((deadline - System.currentTimeMillis() + 999) / 1000).toInt()
+            if (remaining <= 0) break
+            _state.update { it.copy(outgoingAuth = it.outgoingAuth?.copy(remaining = remaining)) }
+
             val reply = withContext(Dispatchers.IO) {
                 runCatching { client.pollAuth(peer, ticket.id) }.getOrNull()
-            } ?: return@repeat // a dropped packet is not a verdict; ask again next second
+            } ?: continue // a dropped packet is not a verdict; ask again next second
 
             when (reply.optString("status")) {
-                "pending" -> return@repeat
+                "pending" -> continue
                 "granted" -> {
                     val token = reply.optString("token")
                     if (token.isEmpty()) {

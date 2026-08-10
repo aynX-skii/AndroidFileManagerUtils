@@ -388,6 +388,11 @@ class HttpServer(
     }
 
     private fun handleDownload(req: Request, out: OutputStream) {
+        if (req.method != "GET" && req.method != "HEAD") {
+            drainBody(req)
+            sendJson(out, "405 Method Not Allowed", jsonError("use GET or HEAD"), true)
+            return
+        }
         val path = req.query["path"].orEmpty()
         val file = Storage.resolve(context, path)
         if (file == null || !file.isFile || !file.canRead()) {
@@ -471,7 +476,11 @@ class HttpServer(
             return
         }
 
-        val targetDir = req.query["dir"]?.takeIf { it.isNotBlank() }?.let { Storage.resolve(context, it) }
+        // Out of bounds, not a directory, or not writable all mean the same thing to the
+        // peer: the file lands in the inbox instead (PROTOCOL.md §3.4).
+        val targetDir = req.query["dir"]?.takeIf { it.isNotBlank() }
+            ?.let { Storage.resolve(context, it) }
+            ?.takeIf { it.isDirectory && it.canWrite() }
         val overwrite = req.query["overwrite"] == "1"
         val contentType = req.headers["content-type"].orEmpty()
         val saved = ArrayList<String>()
@@ -488,10 +497,25 @@ class HttpServer(
                 val name = req.query["name"] ?: "upload-${System.currentTimeMillis()}"
                 saved += receiveRawBody(req, name, targetDir, overwrite)
             }
+        } catch (e: TruncatedBody) {
+            // The peer's body ran out. Answering 200 here is the one failure the client
+            // cannot detect, so it has to be an error even though nothing on our side broke.
+            req.bodyConsumed = false
+            log("Upload truncated: ${e.message}")
+            sendJson(out, "400 Bad Request", jsonError(e.message ?: "request body truncated"), false)
+            return
         } catch (e: Exception) {
             req.bodyConsumed = false
             log("Upload failed: ${e.message}")
             sendJson(out, "500 Internal Server Error", jsonError(e.message ?: "upload failed"), false)
+            return
+        }
+
+        // `ok: true` has to mean bytes really landed. A client that gets an empty list falls
+        // back to showing the name it sent, and the file goes missing with nobody the wiser.
+        if (saved.isEmpty()) {
+            req.bodyConsumed = false
+            sendJson(out, "400 Bad Request", jsonError("request contained no file part"), false)
             return
         }
 
@@ -525,7 +549,13 @@ class HttpServer(
         }
     }
 
-    /** Streams each multipart file part straight to disk — never buffers a file in memory. */
+    /**
+     * Streams each multipart file part straight to disk — never buffers a file in memory.
+     *
+     * Every read that can run out has to be checked: a body that ends early leaves the last
+     * part incomplete, and committing it would rename half a file over the real name while
+     * the peer is told the transfer succeeded (PROTOCOL.md §3.4).
+     */
     private fun receiveMultipart(
         req: Request,
         boundary: String,
@@ -537,13 +567,15 @@ class HttpServer(
         val saved = ArrayList<String>()
 
         // Position the stream just past the first boundary line.
-        input.copyUntil("--$boundary".toByteArray(Charsets.ISO_8859_1), null)
-        var more = input.readLine() != "--"
+        if (!input.copyUntil("--$boundary".toByteArray(Charsets.ISO_8859_1), null)) {
+            throw TruncatedBody("body ended before the first multipart boundary")
+        }
+        var more = input.readLine().orTruncated() != "--"
 
         while (more) {
             val partHeaders = HashMap<String, String>()
             while (true) {
-                val line = input.readLine() ?: return saved
+                val line = input.readLine() ?: throw TruncatedBody("multipart part headers truncated")
                 if (line.isEmpty()) break
                 val sep = line.indexOf(':')
                 if (sep > 0) {
@@ -555,7 +587,9 @@ class HttpServer(
             val fileName = extractParameter(disposition, "filename")
 
             if (fileName.isNullOrBlank()) {
-                input.copyUntil(delimiter, null) // a plain form field: ignore it
+                // a plain form field: ignore the value, but a truncated one still means the
+                // request as a whole is incomplete
+                if (!input.copyUntil(delimiter, null)) throw TruncatedBody("multipart body truncated")
             } else {
                 val sink = if (targetDir != null) {
                     Storage.createFileSink(targetDir, fileName, overwrite)
@@ -563,17 +597,24 @@ class HttpServer(
                     Storage.createInboxSink(context, prefs, fileName)
                 }
                 sink.use {
-                    input.copyUntil(delimiter, it.stream)
+                    if (!input.copyUntil(delimiter, it.stream)) {
+                        // Leaving `use` without commit() deletes the .afmu-part.
+                        throw TruncatedBody("multipart body truncated inside $fileName")
+                    }
                     it.commit()
                     saved += it.displayPath
                     log("Received ${it.displayPath}")
                 }
             }
-            more = input.readLine() != "--"
+            more = input.readLine().orTruncated() != "--"
         }
         req.bodyConsumed = true
         return saved
     }
+
+    /** The closing `--<boundary>--` is part of the body; missing it means the body was cut. */
+    private fun String?.orTruncated(): String =
+        this ?: throw TruncatedBody("multipart body ended before the closing boundary")
 
     private fun handleMkdir(req: Request, out: OutputStream) {
         drainBody(req)

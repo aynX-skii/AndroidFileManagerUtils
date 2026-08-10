@@ -87,7 +87,11 @@ class PeerClient(private val context: Context) {
         }
 
         val body = connection.readJson()
-        return body.optJSONArray("saved")?.optString(0).orEmpty().ifEmpty { file.name }
+        // `saved` is where the bytes actually landed. An empty one alongside ok:true means
+        // the peer wrote nothing, and falling back to the name we sent would report that as
+        // a successful transfer — the one way a file disappears without anyone noticing.
+        return body.optJSONArray("saved")?.optString(0)?.takeIf { it.isNotEmpty() }
+            ?: throw IOException("peer reported success but saved no file")
     }
 
     /** Pulls a file from the peer into this phone's inbox. */
@@ -110,9 +114,9 @@ class PeerClient(private val context: Context) {
         ) ?: remotePath.substringAfterLast('/')
 
         return Storage.createInboxSink(context, prefs, name).use { destination ->
+            var received = 0L
             connection.inputStream.use { input ->
                 val buffer = ByteArray(CHUNK)
-                var received = 0L
                 while (true) {
                     val n = input.read(buffer)
                     if (n <= 0) break
@@ -120,6 +124,12 @@ class PeerClient(private val context: Context) {
                     received += n
                     onProgress(received, total)
                 }
+            }
+            // A peer that hangs up mid-file ends the stream cleanly as far as read() is
+            // concerned. Committing on a short read would pass half a file off as the whole
+            // one; leaving `use` without commit() deletes the .afmu-part instead.
+            if (total >= 0 && received != total) {
+                throw IOException("download truncated: got $received of $total bytes")
             }
             destination.commit()
             destination.displayPath
