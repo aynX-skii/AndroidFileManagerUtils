@@ -1,0 +1,22 @@
+# Android / Gradle
+*.iml
+.gradle/
+.kotlin/
+local.properties
+/.idea/
+.DS_Store
+
+# 构建产物。注意不能写成 /build：Gradle 在每个模块下都会生成一个 build/，
+# 光挡根目录的话 app/build（上百 MB 的中间产物和 APK）会被一起提交进来。
+build/
+/captures
+.externalNativeBuild
+.cxx
+
+# 签名材料绝不入库
+*.jks
+*.keystore
+keystore.properties
+
+__pycache__/
+*.pyc

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  afmu.xml holds the access token and the peer's token. Those are shared secrets for a
+  specific pairing, not settings worth carrying to another device: a restored install
+  should mint a fresh token rather than resurrect one the user may have rotated away.
+-->
+<full-backup-content>
+    <exclude domain="sharedpref" path="afmu.xml" />
+</full-backup-content>

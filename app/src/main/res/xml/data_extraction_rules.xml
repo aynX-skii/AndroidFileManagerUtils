@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Keep the tokens out of both cloud backup and device-to-device transfer; see the note in
+  backup_rules.xml. Everything else in the app is derived state and needs no backup.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="afmu.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="afmu.xml" />
+    </device-transfer>
+</data-extraction-rules>

@@ -1,0 +1,739 @@
+package com.aynux.afmu.core
+
+import android.content.Context
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.BufferedOutputStream
+import java.io.File
+import java.io.FileInputStream
+import java.io.IOException
+import java.io.OutputStream
+import java.net.InetSocketAddress
+import java.net.ServerSocket
+import java.net.Socket
+import java.net.SocketException
+import java.net.URLDecoder
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+
+/**
+ * A small HTTP/1.1 server implemented directly on [ServerSocket]. It serves both the JSON
+ * API used by the Linux client and a browser UI, so a PC with nothing installed can still
+ * transfer files by opening the URL.
+ *
+ * Every /api route requires the shared token from [Prefs]; path traversal is blocked by
+ * [Storage.resolve].
+ */
+class HttpServer(
+    private val context: Context,
+    private val prefs: Prefs,
+    private val log: (String) -> Unit = {},
+) {
+
+    @Volatile private var serverSocket: ServerSocket? = null
+    @Volatile private var pool: ExecutorService? = null
+
+    @Volatile var port: Int = 0
+        private set
+
+    val isRunning: Boolean get() = serverSocket != null
+
+    fun start(): Int {
+        stop()
+        val socket = bind(prefs.port)
+        val executor = Executors.newCachedThreadPool()
+        serverSocket = socket
+        pool = executor
+        port = socket.localPort
+        Thread({ acceptLoop(socket, executor) }, "afmu-accept").apply { isDaemon = true }.start()
+        log("Server listening on port $port")
+        return port
+    }
+
+    fun stop() {
+        val socket = serverSocket ?: return
+        serverSocket = null
+        runCatching { socket.close() }
+        pool?.shutdownNow()
+        pool = null
+        port = 0
+        log("Server stopped")
+    }
+
+    /** Falls back to nearby ports, then to any free port, so a stale socket can't block us. */
+    private fun bind(desired: Int): ServerSocket {
+        var lastError: IOException? = null
+        for (candidate in intArrayOf(desired, desired + 1, desired + 2, 0)) {
+            try {
+                return ServerSocket().apply {
+                    reuseAddress = true
+                    bind(InetSocketAddress(candidate), 64)
+                }
+            } catch (e: IOException) {
+                lastError = e
+            }
+        }
+        throw lastError ?: IOException("cannot bind any port")
+    }
+
+    private fun acceptLoop(socket: ServerSocket, executor: ExecutorService) {
+        while (serverSocket === socket) {
+            val client = try {
+                socket.accept()
+            } catch (e: IOException) {
+                if (serverSocket === socket) log("Accept failed: ${e.message}")
+                return
+            }
+            runCatching {
+                executor.execute {
+                    try {
+                        handle(client)
+                    } catch (e: Exception) {
+                        if (e !is SocketException) log("Connection error: ${e.message}")
+                    } finally {
+                        runCatching { client.close() }
+                    }
+                }
+            }.onFailure { runCatching { client.close() } }
+        }
+    }
+
+    // ---------------------------------------------------------------- request handling
+
+    private class Request(
+        val method: String,
+        val path: String,
+        val query: Map<String, String>,
+        val headers: Map<String, String>,
+        val input: HttpInput,
+        /** Taken from the socket, never from the request — a peer must not name itself. */
+        val remoteHost: String,
+    ) {
+        val contentLength: Long get() = headers["content-length"]?.toLongOrNull() ?: -1L
+        val isChunked: Boolean get() = headers["transfer-encoding"]?.contains("chunked", true) == true
+        val hasBody: Boolean get() = contentLength > 0 || isChunked
+        var bodyConsumed = false
+    }
+
+    private fun handle(socket: Socket) {
+        socket.soTimeout = SOCKET_TIMEOUT_MS
+        socket.tcpNoDelay = true
+        val input = HttpInput(socket.getInputStream())
+        val out = BufferedOutputStream(socket.getOutputStream(), 1 shl 16)
+        val remoteHost = socket.inetAddress?.hostAddress?.removePrefix("::ffff:").orEmpty()
+
+        while (serverSocket != null) {
+            val requestLine = input.readLine() ?: return
+            if (requestLine.isEmpty()) continue
+
+            val parts = requestLine.split(' ')
+            if (parts.size < 3) {
+                sendText(out, "400 Bad Request", "text/plain", "malformed request line", false)
+                return
+            }
+            val method = parts[0].uppercase()
+            val target = parts[1]
+
+            val headers = HashMap<String, String>()
+            while (true) {
+                val line = input.readLine() ?: return
+                if (line.isEmpty()) break
+                val sep = line.indexOf(':')
+                if (sep > 0) {
+                    headers[line.substring(0, sep).trim().lowercase()] = line.substring(sep + 1).trim()
+                }
+            }
+
+            val queryStart = target.indexOf('?')
+            val rawPath = if (queryStart < 0) target else target.substring(0, queryStart)
+            val query = if (queryStart < 0) emptyMap() else parseQuery(target.substring(queryStart + 1))
+            val request = Request(method, decode(rawPath), query, headers, input, remoteHost)
+
+            try {
+                route(request, out)
+            } catch (e: Exception) {
+                log("Request ${request.method} ${request.path} failed: ${e.message}")
+                runCatching {
+                    sendJson(out, "500 Internal Server Error", jsonError(e.message ?: "failed"), false)
+                }
+                return
+            }
+            out.flush()
+
+            // A body we did not read leaves the stream misaligned; drop the connection.
+            val clientWantsClose = headers["connection"].equals("close", ignoreCase = true)
+            if (clientWantsClose || (request.hasBody && !request.bodyConsumed)) return
+        }
+    }
+
+    private fun route(req: Request, out: OutputStream) {
+        if (req.path == "/" || req.path == "/index.html") {
+            sendText(out, "200 OK", "text/html; charset=utf-8", WebUi.page(prefs.deviceName, LocaleHelper.effective(context) == Prefs.LANG_CHINESE), true)
+            return
+        }
+        if (req.path == "/favicon.ico") {
+            sendText(out, "404 Not Found", "text/plain", "", true)
+            return
+        }
+        if (!req.path.startsWith("/api/")) {
+            sendText(out, "404 Not Found", "text/plain", "no such route", true)
+            return
+        }
+        // Deliberately before the token check: this is how a PC that has no token asks for
+        // one. Everything that keeps it from being abused lives in [AuthRequests].
+        if (req.path == "/api/authorize") {
+            handleAuthorize(req, out)
+            return
+        }
+        if (!authorized(req)) {
+            drainBody(req)
+            sendJson(out, "401 Unauthorized", jsonError("invalid or missing token"), false)
+            return
+        }
+
+        when (req.path) {
+            "/api/pair" -> handlePair(req, out)
+            "/api/info" -> handleInfo(out)
+            "/api/list" -> handleList(req, out)
+            "/api/download" -> handleDownload(req, out)
+            "/api/upload" -> handleUpload(req, out)
+            "/api/mkdir" -> handleMkdir(req, out)
+            "/api/delete" -> handleDelete(req, out)
+            else -> {
+                drainBody(req)
+                sendJson(out, "404 Not Found", jsonError("unknown endpoint ${req.path}"), true)
+            }
+        }
+    }
+
+    /** Three equivalent ways to send the token; take the first non-empty one (PROTOCOL.md §2.2). */
+    private fun authorized(req: Request): Boolean {
+        val supplied = req.headers["x-afmu-token"]?.takeIf { it.isNotEmpty() }
+            ?: req.query["token"]?.takeIf { it.isNotEmpty() }
+            ?: req.headers["authorization"]?.removePrefix("Bearer ")?.trim()?.takeIf { it.isNotEmpty() }
+            ?: return false
+        return constantTimeEquals(supplied, prefs.token)
+    }
+
+    // ---------------------------------------------------------------------- endpoints
+
+    /**
+     * `POST` registers a request and answers with an id; `GET ?request=<id>` polls it
+     * (PROTOCOL.md §3.8). The token is handed over only once the user has tapped Allow, and
+     * only to whoever holds the id — which was given to the requester alone.
+     */
+    private fun handleAuthorize(req: Request, out: OutputStream) {
+        when (req.method) {
+            "POST", "PUT" -> {
+                drainBody(req)
+                if (!prefs.allowAuthRequests) {
+                    sendJson(out, "403 Forbidden", jsonError("authorization requests are disabled"), true)
+                    return
+                }
+                val request = AuthRequests.create(
+                    prefs = prefs,
+                    name = req.query["name"].orEmpty(),
+                    os = req.query["os"].orEmpty(),
+                    host = req.remoteHost,
+                    port = req.query["port"]?.toIntOrNull()?.takeIf { it in 1..65535 } ?: 0,
+                    code = req.query["code"].orEmpty(),
+                )
+                if (request == null) {
+                    sendJson(
+                        out, "429 Too Many Requests",
+                        jsonError("another request is pending, or this address was refused recently"),
+                        true,
+                    )
+                    return
+                }
+                log("${request.name} (${request.host}) wants to connect — code ${request.code}")
+                sendJson(
+                    out, "200 OK",
+                    JSONObject()
+                        .put("ok", true)
+                        .put("request", request.id)
+                        .put("expires", AuthRequests.TIMEOUT_SEC),
+                    true,
+                )
+            }
+
+            "GET" -> {
+                val id = req.query["request"].orEmpty()
+                val request = if (id.isEmpty()) null else AuthRequests.status(id)
+                if (request == null) {
+                    sendJson(out, "404 Not Found", jsonError("unknown or expired request"), true)
+                    return
+                }
+                val json = JSONObject().put("ok", true)
+                when (request.status) {
+                    AuthRequests.Status.PENDING -> json.put("status", "pending")
+                    AuthRequests.Status.DENIED -> json.put("status", "denied")
+                    AuthRequests.Status.EXPIRED -> json.put("status", "expired")
+                    AuthRequests.Status.GRANTED -> json
+                        .put("status", "granted")
+                        .put("token", prefs.token)
+                        .put("name", prefs.deviceName)
+                        .put("port", port)
+                }
+                sendJson(out, "200 OK", json, true)
+            }
+
+            else -> {
+                drainBody(req)
+                sendJson(out, "405 Method Not Allowed", jsonError("use POST or GET"), true)
+            }
+        }
+    }
+
+    /**
+     * The peer hands back its own address and token, so a pairing done in one direction
+     * (a scanned QR code, an approved request) leaves both directions usable (PROTOCOL.md §3.9).
+     */
+    private fun handlePair(req: Request, out: OutputStream) {
+        drainBody(req)
+        if (req.method != "POST" && req.method != "PUT") {
+            sendJson(out, "405 Method Not Allowed", jsonError("use POST"), true)
+            return
+        }
+        val token = req.query["token"]?.trim().orEmpty()
+        if (token.isEmpty()) {
+            sendJson(out, "400 Bad Request", jsonError("need token"), true)
+            return
+        }
+        val peerPort = req.query["port"]?.toIntOrNull()?.takeIf { it in 1..65535 } ?: Prefs.DEFAULT_PORT
+        val peer = Discovery.Peer(
+            name = req.query["name"]?.trim()?.takeIf { it.isNotEmpty() } ?: req.remoteHost,
+            os = req.query["os"]?.trim()?.takeIf { it.isNotEmpty() } ?: "linux",
+            host = req.remoteHost,
+            port = peerPort,
+        )
+        prefs.peerToken = token
+        prefs.lastPeer = "${peer.host}:${peer.port}"
+        Bridge.notePaired(peer)
+        log("Paired with ${peer.name} (${peer.host}:${peer.port})")
+
+        sendJson(
+            out, "200 OK",
+            JSONObject()
+                .put("ok", true)
+                .put("name", prefs.deviceName)
+                .put("os", "android")
+                .put("protocol", PROTOCOL_VERSION),
+            true,
+        )
+    }
+
+    private fun handleInfo(out: OutputStream) {
+        val json = JSONObject().apply {
+            put("ok", true)
+            put("name", prefs.deviceName)
+            put("os", "android")
+            put("androidRelease", android.os.Build.VERSION.RELEASE)
+            put("sdk", android.os.Build.VERSION.SDK_INT)
+            put("protocol", PROTOCOL_VERSION)
+            put("writable", prefs.writable)
+            put("fullStorageAccess", Storage.hasFullAccess(context))
+            put("inbox", Storage.inboxDir(context, prefs).absolutePath)
+            put("roots", JSONArray().apply {
+                Storage.roots(context).forEach {
+                    put(JSONObject().put("name", it.name).put("path", it.dir.absolutePath))
+                }
+            })
+        }
+        sendJson(out, "200 OK", json, true)
+    }
+
+    private fun handleList(req: Request, out: OutputStream) {
+        val path = req.query["path"].orEmpty()
+        val json = JSONObject().put("ok", true).put("path", path.ifEmpty { "/" })
+
+        if (path.isEmpty() || path == "/") {
+            json.put("parent", JSONObject.NULL)
+            json.put("entries", JSONArray().apply {
+                Storage.roots(context).forEach { root ->
+                    put(JSONObject().apply {
+                        put("name", root.name)
+                        put("path", root.dir.absolutePath)
+                        put("dir", true)
+                        put("size", 0)
+                        put("mtime", root.dir.lastModified() / 1000)
+                    })
+                }
+            })
+            sendJson(out, "200 OK", json, true)
+            return
+        }
+
+        val dir = Storage.resolve(context, path)
+        if (dir == null || !dir.isDirectory) {
+            sendJson(out, "404 Not Found", jsonError("not a readable directory: $path"), true)
+            return
+        }
+        val children = dir.listFiles().orEmpty().sortedWith(
+            compareBy({ !it.isDirectory }, { it.name.lowercase() })
+        )
+        json.put("parent", if (Storage.resolve(context, dir.parent ?: "") != null) dir.parent else "/")
+        json.put("entries", JSONArray().apply {
+            children.forEach { child ->
+                put(JSONObject().apply {
+                    put("name", child.name)
+                    put("path", child.absolutePath)
+                    put("dir", child.isDirectory)
+                    put("size", if (child.isDirectory) 0L else child.length())
+                    put("mtime", child.lastModified() / 1000)
+                })
+            }
+        })
+        sendJson(out, "200 OK", json, true)
+    }
+
+    private fun handleDownload(req: Request, out: OutputStream) {
+        val path = req.query["path"].orEmpty()
+        val file = Storage.resolve(context, path)
+        if (file == null || !file.isFile || !file.canRead()) {
+            sendJson(out, "404 Not Found", jsonError("no readable file at $path"), true)
+            return
+        }
+
+        val total = file.length()
+        var start = 0L
+        var end = total - 1
+        var status = "200 OK"
+
+        val range = req.headers["range"]
+        if (range != null && range.startsWith("bytes=")) {
+            val spec = range.removePrefix("bytes=").substringBefore(',')
+            val from = spec.substringBefore('-').trim()
+            val to = spec.substringAfter('-').trim()
+            // A malformed range is a client error, not a server one: answer 416 rather
+            // than letting NumberFormatException bubble up as a 500.
+            val fromValue = if (from.isEmpty()) null else from.toLongOrNull()
+            val toValue = if (to.isEmpty()) null else to.toLongOrNull()
+            val malformed = (from.isNotEmpty() && fromValue == null) ||
+                (to.isNotEmpty() && toValue == null) ||
+                (fromValue == null && toValue == null)
+            when {
+                malformed -> start = total // forces the 416 below
+                fromValue == null && toValue != null -> start = (total - toValue).coerceAtLeast(0)
+                fromValue != null -> {
+                    start = fromValue
+                    if (toValue != null) end = minOf(toValue, total - 1)
+                }
+            }
+            if (malformed || start > end || start >= total) {
+                sendHeaders(
+                    out, "416 Range Not Satisfiable", "application/json",
+                    0L, mapOf("Content-Range" to "bytes */$total"), true
+                )
+                return
+            }
+            status = "206 Partial Content"
+        }
+
+        val length = end - start + 1
+        val headers = linkedMapOf(
+            "Accept-Ranges" to "bytes",
+            "Content-Disposition" to contentDisposition(file.name),
+            "Last-Modified" to httpDate(file.lastModified()),
+        )
+        if (status.startsWith("206")) headers["Content-Range"] = "bytes $start-$end/$total"
+
+        sendHeaders(out, status, Storage.mimeTypeOf(file.name), length, headers, true)
+        if (req.method == "HEAD") {
+            out.flush()
+            return
+        }
+
+        FileInputStream(file).use { input ->
+            if (start > 0) input.channel.position(start)
+            val buffer = ByteArray(COPY_BUFFER)
+            var left = length
+            while (left > 0) {
+                val n = input.read(buffer, 0, minOf(left, COPY_BUFFER.toLong()).toInt())
+                if (n <= 0) break
+                out.write(buffer, 0, n)
+                left -= n
+            }
+        }
+        out.flush()
+        log("Sent ${file.name} (${formatBytes(length)})")
+    }
+
+    private fun handleUpload(req: Request, out: OutputStream) {
+        if (req.method != "POST" && req.method != "PUT") {
+            drainBody(req)
+            sendJson(out, "405 Method Not Allowed", jsonError("use POST"), true)
+            return
+        }
+        if (!prefs.writable) {
+            drainBody(req)
+            sendJson(out, "403 Forbidden", jsonError("this device is read-only"), false)
+            return
+        }
+
+        val targetDir = req.query["dir"]?.takeIf { it.isNotBlank() }?.let { Storage.resolve(context, it) }
+        val overwrite = req.query["overwrite"] == "1"
+        val contentType = req.headers["content-type"].orEmpty()
+        val saved = ArrayList<String>()
+
+        try {
+            if (contentType.startsWith("multipart/form-data", ignoreCase = true)) {
+                val boundary = contentType.substringAfter("boundary=", "").trim().trim('"')
+                if (boundary.isEmpty()) {
+                    sendJson(out, "400 Bad Request", jsonError("missing multipart boundary"), false)
+                    return
+                }
+                saved += receiveMultipart(req, boundary, targetDir, overwrite)
+            } else {
+                val name = req.query["name"] ?: "upload-${System.currentTimeMillis()}"
+                saved += receiveRawBody(req, name, targetDir, overwrite)
+            }
+        } catch (e: Exception) {
+            req.bodyConsumed = false
+            log("Upload failed: ${e.message}")
+            sendJson(out, "500 Internal Server Error", jsonError(e.message ?: "upload failed"), false)
+            return
+        }
+
+        val json = JSONObject()
+            .put("ok", true)
+            .put("saved", JSONArray(saved))
+        sendJson(out, "200 OK", json, false)
+    }
+
+    private fun receiveRawBody(
+        req: Request,
+        name: String,
+        targetDir: File?,
+        overwrite: Boolean,
+    ): List<String> {
+        val sink = if (targetDir != null) {
+            Storage.createFileSink(targetDir, name, overwrite)
+        } else {
+            Storage.createInboxSink(context, prefs, name)
+        }
+        return sink.use {
+            when {
+                req.isChunked -> req.input.copyChunked(it.stream)
+                req.contentLength >= 0 -> req.input.copyExact(it.stream, req.contentLength)
+                else -> throw IOException("upload needs Content-Length or chunked encoding")
+            }
+            it.commit()
+            req.bodyConsumed = true
+            log("Received ${it.displayPath}")
+            listOf(it.displayPath)
+        }
+    }
+
+    /** Streams each multipart file part straight to disk — never buffers a file in memory. */
+    private fun receiveMultipart(
+        req: Request,
+        boundary: String,
+        targetDir: File?,
+        overwrite: Boolean,
+    ): List<String> {
+        val input = req.input
+        val delimiter = "\r\n--$boundary".toByteArray(Charsets.ISO_8859_1)
+        val saved = ArrayList<String>()
+
+        // Position the stream just past the first boundary line.
+        input.copyUntil("--$boundary".toByteArray(Charsets.ISO_8859_1), null)
+        var more = input.readLine() != "--"
+
+        while (more) {
+            val partHeaders = HashMap<String, String>()
+            while (true) {
+                val line = input.readLine() ?: return saved
+                if (line.isEmpty()) break
+                val sep = line.indexOf(':')
+                if (sep > 0) {
+                    partHeaders[line.substring(0, sep).trim().lowercase()] =
+                        line.substring(sep + 1).trim()
+                }
+            }
+            val disposition = partHeaders["content-disposition"].orEmpty()
+            val fileName = extractParameter(disposition, "filename")
+
+            if (fileName.isNullOrBlank()) {
+                input.copyUntil(delimiter, null) // a plain form field: ignore it
+            } else {
+                val sink = if (targetDir != null) {
+                    Storage.createFileSink(targetDir, fileName, overwrite)
+                } else {
+                    Storage.createInboxSink(context, prefs, fileName)
+                }
+                sink.use {
+                    input.copyUntil(delimiter, it.stream)
+                    it.commit()
+                    saved += it.displayPath
+                    log("Received ${it.displayPath}")
+                }
+            }
+            more = input.readLine() != "--"
+        }
+        req.bodyConsumed = true
+        return saved
+    }
+
+    private fun handleMkdir(req: Request, out: OutputStream) {
+        drainBody(req)
+        if (!prefs.writable) {
+            sendJson(out, "403 Forbidden", jsonError("this device is read-only"), true)
+            return
+        }
+        val parent = Storage.resolve(context, req.query["path"].orEmpty())
+        val name = req.query["name"]?.let { Storage.sanitizeName(it) }
+        if (parent == null || name.isNullOrEmpty()) {
+            sendJson(out, "400 Bad Request", jsonError("need path and name"), true)
+            return
+        }
+        val created = File(parent, name)
+        if (!created.isDirectory && !created.mkdirs()) {
+            sendJson(out, "500 Internal Server Error", jsonError("mkdir failed"), true)
+            return
+        }
+        sendJson(out, "200 OK", JSONObject().put("ok", true).put("path", created.absolutePath), true)
+    }
+
+    private fun handleDelete(req: Request, out: OutputStream) {
+        drainBody(req)
+        if (!prefs.writable) {
+            sendJson(out, "403 Forbidden", jsonError("this device is read-only"), true)
+            return
+        }
+        val target = Storage.resolve(context, req.query["path"].orEmpty())
+        if (target == null || !target.exists()) {
+            sendJson(out, "404 Not Found", jsonError("nothing to delete"), true)
+            return
+        }
+        // A root is the whole volume; recursive delete on one is unrecoverable and is
+        // never what the user meant. Individual files inside it are still deletable.
+        if (Storage.isRoot(context, target)) {
+            sendJson(out, "403 Forbidden", jsonError("refusing to delete a shared root"), true)
+            return
+        }
+        // Deleting a whole tree is deliberately opt-in.
+        val recursive = req.query["recursive"] == "1"
+        val ok = if (target.isDirectory && recursive) target.deleteRecursively() else target.delete()
+        if (!ok) {
+            sendJson(out, "500 Internal Server Error", jsonError("delete failed"), true)
+            return
+        }
+        log("Deleted ${target.absolutePath}")
+        sendJson(out, "200 OK", JSONObject().put("ok", true), true)
+    }
+
+    // ------------------------------------------------------------------------ plumbing
+
+    private fun drainBody(req: Request) {
+        if (req.bodyConsumed || !req.hasBody) return
+        if (req.contentLength in 0..MAX_DRAIN) {
+            req.input.discard(req.contentLength)
+            req.bodyConsumed = true
+        }
+    }
+
+    private fun sendHeaders(
+        out: OutputStream,
+        status: String,
+        contentType: String,
+        contentLength: Long,
+        extra: Map<String, String>,
+        keepAlive: Boolean,
+    ) {
+        val sb = StringBuilder(256)
+        sb.append("HTTP/1.1 ").append(status).append("\r\n")
+        sb.append("Content-Type: ").append(contentType).append("\r\n")
+        sb.append("Content-Length: ").append(contentLength).append("\r\n")
+        sb.append("Connection: ").append(if (keepAlive) "keep-alive" else "close").append("\r\n")
+        sb.append("Cache-Control: no-store\r\n")
+        extra.forEach { (k, v) -> sb.append(k).append(": ").append(v).append("\r\n") }
+        sb.append("\r\n")
+        out.write(sb.toString().toByteArray(Charsets.ISO_8859_1))
+    }
+
+    private fun sendText(
+        out: OutputStream,
+        status: String,
+        contentType: String,
+        body: String,
+        keepAlive: Boolean,
+    ) {
+        val bytes = body.toByteArray(Charsets.UTF_8)
+        sendHeaders(out, status, contentType, bytes.size.toLong(), emptyMap(), keepAlive)
+        out.write(bytes)
+        out.flush()
+    }
+
+    private fun sendJson(out: OutputStream, status: String, body: JSONObject, keepAlive: Boolean) {
+        sendText(out, status, "application/json; charset=utf-8", body.toString(), keepAlive)
+    }
+
+    private fun jsonError(message: String) = JSONObject().put("ok", false).put("error", message)
+
+    companion object {
+        const val PROTOCOL_VERSION = 1
+        private const val SOCKET_TIMEOUT_MS = 120_000
+        private const val COPY_BUFFER = 128 * 1024
+        private const val MAX_DRAIN = 1L shl 20
+
+        fun parseQuery(raw: String): Map<String, String> {
+            if (raw.isEmpty()) return emptyMap()
+            val map = LinkedHashMap<String, String>()
+            for (pair in raw.split('&')) {
+                if (pair.isEmpty()) continue
+                val eq = pair.indexOf('=')
+                if (eq < 0) map[decode(pair)] = "" else map[decode(pair.substring(0, eq))] =
+                    decode(pair.substring(eq + 1))
+            }
+            return map
+        }
+
+        fun decode(value: String): String =
+            runCatching { URLDecoder.decode(value.replace("+", "%2B"), "UTF-8") }.getOrDefault(value)
+
+        /** Pulls `filename="x"` or RFC 5987 `filename*=UTF-8''x` out of a header. */
+        fun extractParameter(header: String, key: String): String? {
+            Regex("""$key\*\s*=\s*UTF-8''([^;]+)""", RegexOption.IGNORE_CASE)
+                .find(header)?.let { return decode(it.groupValues[1].trim()) }
+            Regex("""$key\s*=\s*"([^"]*)"""", RegexOption.IGNORE_CASE)
+                .find(header)?.let { return it.groupValues[1] }
+            Regex("""$key\s*=\s*([^;]+)""", RegexOption.IGNORE_CASE)
+                .find(header)?.let { return it.groupValues[1].trim() }
+            return null
+        }
+
+        fun contentDisposition(name: String): String {
+            val ascii = name.map { if (it.code in 32..126 && it != '"') it else '_' }.joinToString("")
+            val encoded = java.net.URLEncoder.encode(name, "UTF-8").replace("+", "%20")
+            return """attachment; filename="$ascii"; filename*=UTF-8''$encoded"""
+        }
+
+        fun httpDate(millis: Long): String {
+            val format = java.text.SimpleDateFormat(
+                "EEE, dd MMM yyyy HH:mm:ss 'GMT'", java.util.Locale.US
+            )
+            format.timeZone = java.util.TimeZone.getTimeZone("GMT")
+            return format.format(java.util.Date(millis))
+        }
+
+        fun formatBytes(bytes: Long): String {
+            if (bytes < 1024) return "$bytes B"
+            val units = arrayOf("KB", "MB", "GB", "TB")
+            var value = bytes.toDouble() / 1024
+            var index = 0
+            while (value >= 1024 && index < units.lastIndex) {
+                value /= 1024
+                index++
+            }
+            return String.format(java.util.Locale.US, "%.1f %s", value, units[index])
+        }
+
+        fun constantTimeEquals(a: String, b: String): Boolean {
+            if (a.length != b.length) return false
+            var diff = 0
+            for (i in a.indices) diff = diff or (a[i].code xor b[i].code)
+            return diff == 0
+        }
+    }
+}

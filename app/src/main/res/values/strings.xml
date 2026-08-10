@@ -1,0 +1,115 @@
+<resources>
+    <string name="app_name">FileBridge</string>
+    <string name="channel_name">File transfer service</string>
+
+    <!-- 服务卡片 -->
+    <string name="receive_on_this_phone">Receive on this phone</string>
+    <string name="server_running">Server running on port %1$d</string>
+    <string name="server_stopped">Server stopped</string>
+    <string name="network_label">Network: %1$s</string>
+    <string name="no_lan_detected">  ·  no LAN detected</string>
+    <string name="refresh_network">Refresh network</string>
+    <string name="open_in_pc_browser">Open in the PC browser</string>
+    <string name="no_usable_address">No usable network address. Connect to Wi-Fi, or share the phone\'s </string>
+    <string name="usb_tethering_hint">USB tethering / hotspot with the PC.</string>
+    <string name="access_token">Access token</string>
+    <string name="generate_new_token">Generate a new token</string>
+    <string name="incoming_files_land_in">Incoming files land in %1$s</string>
+
+    <!-- 权限 -->
+    <string name="limited_file_access">Limited file access</string>
+    <string name="limited_file_access_body">Without all-files access the PC can only browse this app\'s own folder. </string>
+    <string name="limited_file_access_body2">Grant it to share the whole internal storage. Receiving files works either way.</string>
+    <string name="grant_all_files">Grant all-files access</string>
+
+    <!-- 发送 / 浏览 -->
+    <string name="send_to_a_pc">Send to a PC</string>
+    <string name="scan_the_lan">Scan the LAN</string>
+    <string name="scanning">Scanning…</string>
+    <string name="run_afmu_serve">Start the receiving service on the other device, then scan — or just ask to connect.</string>
+    <string name="pc_address_hint">PC address (192.168.1.20:8765)</string>
+    <string name="add">Add</string>
+    <string name="pc_token_hint">PC token (printed by afmu)</string>
+    <string name="choose_files_and_send">Choose files and send</string>
+    <string name="browse_pc_and_pull">Browse the PC and pull files</string>
+    <string name="up_one_folder">Up one folder</string>
+    <string name="reload">Reload</string>
+    <string name="cancel">Cancel</string>
+    <string name="close">Close</string>
+    <string name="folder">Folder</string>
+    <string name="this_folder_is_empty">This folder is empty.</string>
+    <string name="pull_all">Pull all (%1$d)</string>
+    <string name="download">Download</string>
+
+    <!-- 设置 -->
+    <string name="settings">Settings</string>
+    <string name="device_name">Device name</string>
+    <string name="save_name">Save name</string>
+    <string name="discoverable">Discoverable</string>
+    <string name="discoverable_desc">Answer broadcast probes so the PC finds this phone automatically</string>
+    <string name="allow_writes">Allow writes</string>
+    <string name="allow_writes_desc">Let the PC upload, create folders and delete files</string>
+    <string name="language">Language</string>
+    <string name="language_system">Follow system</string>
+    <string name="language_en">English</string>
+    <string name="language_zh">中文</string>
+
+    <!-- 传输 / 日志 -->
+    <string name="activity">Activity</string>
+    <string name="clear">Clear</string>
+    <string name="clear_finished">Clear finished</string>
+    <string name="nothing_yet">Nothing yet.</string>
+    <string name="copy">Copy</string>
+    <string name="state_done">done</string>
+    <string name="state_failed">failed</string>
+
+    <!-- 通知 -->
+    <string name="notif_starting">Starting…</string>
+    <string name="notif_reachable_at">Reachable at %1$s</string>
+    <string name="notif_waiting_network">Waiting for a network</string>
+    <string name="notif_stopped">Stopped</string>
+    <string name="notif_stop_action">Stop</string>
+
+    <!-- ViewModel 提示 -->
+    <string name="msg_new_token">New token generated</string>
+    <string name="msg_no_pc_found">No PC found. Start `afmu serve` or add its IP by hand.</string>
+    <string name="msg_enter_pc_token">Enter the token printed by afmu on the PC.</string>
+
+    <!-- 扫码配对 -->
+    <string name="scan_to_connect">Scan to connect</string>
+    <string name="scan_hint">Point the camera at the QR code shown on the PC.</string>
+    <string name="scan_hint_where">FileBridge on the PC: Devices or Serving → Show QR code.</string>
+    <string name="msg_not_afmu_code">That is not a FileBridge pairing code.</string>
+    <string name="msg_scan_unreachable">Scanned the code, but the PC did not answer. Same Wi-Fi?</string>
+    <string name="msg_paired_with">Paired with</string>
+    <string name="msg_camera_needed">Camera access is needed to scan a pairing code.</string>
+
+    <!-- 授权连接 -->
+    <string name="allow_auth_requests">Allow connection requests</string>
+    <string name="allow_auth_requests_desc">A device without the token can ask, and you approve it here</string>
+    <string name="auth_channel_name">Connection requests</string>
+    <string name="auth_channel_desc">Asks you to approve a PC that wants to connect</string>
+    <string name="auth_notif_title">%1$s wants to connect</string>
+    <string name="auth_notif_body">From %1$s. Confirmation code %2$s — it must match the one on the PC.</string>
+    <string name="auth_dialog_title">Allow this connection?</string>
+    <string name="auth_dialog_body">%1$s (%2$s) is asking to connect to this phone.</string>
+    <string name="auth_dialog_code_hint">Only allow if the other screen is showing this same code.</string>
+    <string name="auth_dialog_grant_hint">Allowing hands over this phone\'s access token; it can be revoked by generating a new one.</string>
+    <string name="auth_allow">Allow</string>
+    <string name="auth_deny">Deny</string>
+    <string name="msg_auth_allowed">Connection allowed</string>
+
+    <!-- Asking another device to approve us (this is also how phone-to-phone works) -->
+    <string name="ask_to_connect">Ask to connect</string>
+    <string name="outgoing_auth_title">Waiting for approval</string>
+    <string name="outgoing_auth_sending">Sending the request…</string>
+    <string name="outgoing_auth_body">A prompt is showing on %1$s — tap Allow over there.</string>
+    <string name="outgoing_auth_code_hint">Only allow if the code on the other screen matches this one.</string>
+    <string name="outgoing_auth_remaining">%1$d s left</string>
+    <string name="msg_auth_denied">The other device denied this connection.</string>
+    <string name="msg_auth_expired">The request timed out — nothing was confirmed.</string>
+    <string name="msg_auth_unsupported">That device does not support approval-based connecting — enter its token, or scan its QR code.</string>
+    <string name="msg_auth_disabled">That device has connection requests switched off — turn them on in its settings.</string>
+    <string name="msg_auth_busy">That device is already handling another request; try again shortly.</string>
+    <string name="msg_auth_failed">The authorization request failed; try again.</string>
+</resources>

@@ -1,0 +1,697 @@
+package com.aynux.afmu
+
+import android.app.Application
+import android.net.Uri
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.aynux.afmu.core.AuthRequests
+import com.aynux.afmu.core.Bridge
+import com.aynux.afmu.core.Discovery
+import com.aynux.afmu.core.LocaleHelper
+import com.aynux.afmu.core.PairPayload
+import com.aynux.afmu.core.PeerClient
+import com.aynux.afmu.core.Prefs
+import com.aynux.afmu.core.Storage
+import com.aynux.afmu.service.TransferService
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.security.SecureRandom
+import java.util.concurrent.atomic.AtomicLong
+
+class MainViewModel(app: Application) : AndroidViewModel(app) {
+
+    enum class Status { RUNNING, DONE, FAILED }
+
+    /** Which way the bytes are going — the transfer list mixes both. */
+    enum class Direction { SEND, RECEIVE }
+
+    data class Transfer(
+        val id: Long,
+        val name: String,
+        val direction: Direction = Direction.SEND,
+        val moved: Long = 0,
+        val total: Long = -1,
+        val status: Status = Status.RUNNING,
+        val detail: String = "",
+    ) {
+        val fraction: Float get() = if (total > 0) (moved.toFloat() / total).coerceIn(0f, 1f) else 0f
+    }
+
+    /** One row of a `GET /api/list` reply from the PC. */
+    data class RemoteEntry(
+        val name: String,
+        val path: String,
+        val isDir: Boolean,
+        val size: Long,
+        val mtime: Long,
+    )
+
+    /** State of the remote file browser; null when the browser is closed. */
+    data class RemoteBrowse(
+        val peer: Discovery.Peer,
+        val path: String = "/",
+        val parent: String? = null,
+        val entries: List<RemoteEntry> = emptyList(),
+        val loading: Boolean = true,
+        val error: String? = null,
+    ) {
+        val files: List<RemoteEntry> get() = entries.filterNot { it.isDir }
+    }
+
+    /**
+     * A request this phone has sent to another device, waiting for someone to tap Allow over
+     * there. Mirrors the Linux client's side of PROTOCOL.md §3.8 — that is how one phone
+     * connects to another without either of them typing a token.
+     */
+    data class OutgoingAuth(
+        val peer: Discovery.Peer,
+        /** Shown on both screens; the user compares them before allowing. */
+        val code: String,
+        val remaining: Int = AuthRequests.TIMEOUT_SEC,
+        val sending: Boolean = true,
+    )
+
+    data class UiState(
+        val serverRunning: Boolean = false,
+        val port: Int = 0,
+        val urls: List<String> = emptyList(),
+        val network: String = "",
+        val onLan: Boolean = false,
+        val log: List<String> = emptyList(),
+        val token: String = "",
+        val deviceName: String = "",
+        val inbox: String = "",
+        val writable: Boolean = true,
+        val discoverable: Boolean = true,
+        val fullStorageAccess: Boolean = false,
+        val peers: List<Discovery.Peer> = emptyList(),
+        val selectedPeer: Discovery.Peer? = null,
+        val peerToken: String = "",
+        val scanning: Boolean = false,
+        val browse: RemoteBrowse? = null,
+        val transfers: List<Transfer> = emptyList(),
+        val message: String? = null,
+        val language: String = Prefs.LANG_SYSTEM,
+        /** Another device is asking to connect; non-null puts the approval dialog on screen. */
+        val pendingAuth: AuthRequests.Request? = null,
+        /** We are asking another device; non-null puts the waiting dialog on screen. */
+        val outgoingAuth: OutgoingAuth? = null,
+        val allowAuthRequests: Boolean = true,
+        val scannerOpen: Boolean = false,
+    )
+
+    /** Toast/snackbar text has to follow the chosen language like the rest of the UI. */
+    private fun str(resId: Int): String =
+        LocaleHelper.wrap(getApplication()).getString(resId)
+
+    private val prefs = Prefs(app)
+    private val client = PeerClient(app)
+    private val ids = AtomicLong(0)
+
+    private val _state = MutableStateFlow(UiState())
+    val state: StateFlow<UiState> = _state.asStateFlow()
+
+    /** Last pairing already reflected in the UI; guards against re-applying on every emission. */
+    private var seenPairEvent = 0
+
+    /** The poll loop of an authorization we started; cancelled when the user backs out. */
+    private var authJob: Job? = null
+
+    init {
+        reloadPrefs()
+        viewModelScope.launch {
+            Bridge.state.collect { bridge ->
+                _state.update {
+                    it.copy(
+                        serverRunning = bridge.running,
+                        port = bridge.port,
+                        urls = bridge.urls,
+                        network = bridge.network,
+                        onLan = bridge.onLan,
+                        log = bridge.log,
+                    )
+                }
+                // A peer wrote its details to /api/pair while the app was open; adopt them
+                // instead of waiting for the next onResume to re-read prefs.
+                if (bridge.pairEvents != seenPairEvent) {
+                    seenPairEvent = bridge.pairEvents
+                    bridge.pairedWith?.let(::adoptPeer)
+                }
+            }
+        }
+        viewModelScope.launch {
+            AuthRequests.pending.collect { request ->
+                _state.update { it.copy(pendingAuth = request) }
+            }
+        }
+    }
+
+    fun reloadPrefs() {
+        val app = getApplication<Application>()
+        _state.update {
+            it.copy(
+                token = prefs.token,
+                deviceName = prefs.deviceName,
+                writable = prefs.writable,
+                discoverable = prefs.discoverable,
+                peerToken = prefs.peerToken,
+                allowAuthRequests = prefs.allowAuthRequests,
+                language = prefs.language,
+                inbox = Storage.inboxDir(app, prefs).absolutePath,
+                fullStorageAccess = Storage.hasFullAccess(app),
+            )
+        }
+        Bridge.refresh(app)
+    }
+
+    // ------------------------------------------------------------------ server controls
+
+    fun setServerRunning(running: Boolean) {
+        val app = getApplication<Application>()
+        // Remember the choice: the next launch must not silently start serving again.
+        prefs.serverEnabled = running
+        if (running) TransferService.start(app) else TransferService.stop(app)
+    }
+
+    fun refreshNetwork() = Bridge.refresh(getApplication())
+
+    fun regenerateToken() {
+        prefs.regenerateToken()
+        _state.update { it.copy(token = prefs.token, message = str(R.string.msg_new_token)) }
+        Bridge.log("Access token regenerated — reconnect your PC")
+    }
+
+    fun setDeviceName(name: String) {
+        prefs.deviceName = name.trim().ifBlank { android.os.Build.MODEL }
+        _state.update { it.copy(deviceName = prefs.deviceName) }
+    }
+
+    fun setWritable(value: Boolean) {
+        prefs.writable = value
+        _state.update { it.copy(writable = value) }
+    }
+
+    /**
+     * Persists the language. Publishing it on the state is all it takes: the UI resolves its
+     * strings against whatever this says (see ProvideAppLocale), so the switch is just the next
+     * recomposition.
+     */
+    fun setLanguage(tag: String) {
+        if (prefs.language == tag) return
+        prefs.language = tag
+        LocaleHelper.applyDefault(tag)
+        _state.update { it.copy(language = tag) }
+    }
+
+    fun setDiscoverable(value: Boolean) {
+        prefs.discoverable = value
+        _state.update { it.copy(discoverable = value) }
+    }
+
+    fun setAllowAuthRequests(value: Boolean) {
+        prefs.allowAuthRequests = value
+        if (!value) AuthRequests.clear()
+        _state.update { it.copy(allowAuthRequests = value) }
+    }
+
+    // ------------------------------------------------------------ approving a PC
+
+    /**
+     * Grants the asking PC this phone's token. Nothing leaves the device until this runs —
+     * the endpoint only ever parks a request until the user decides.
+     */
+    fun approveAuth() {
+        val request = _state.value.pendingAuth ?: return
+        AuthRequests.decide(request.id, granted = true)
+        Bridge.log("Allowed ${request.name} (${request.host}) to connect")
+        _state.update { it.copy(message = str(R.string.msg_auth_allowed)) }
+    }
+
+    fun denyAuth() {
+        val request = _state.value.pendingAuth ?: return
+        AuthRequests.decide(request.id, granted = false)
+        Bridge.log("Denied ${request.name} (${request.host})")
+    }
+
+    // ------------------------------------------------------------------ QR pairing
+
+    fun openScanner() = _state.update { it.copy(scannerOpen = true) }
+    fun closeScanner() = _state.update { it.copy(scannerOpen = false) }
+
+    fun reportCameraDenied() =
+        _state.update { it.copy(message = str(R.string.msg_camera_needed)) }
+
+    /**
+     * A decoded QR code. Anything that is not one of ours is reported and ignored — a camera
+     * pointed at the world decodes plenty of barcodes nobody asked about.
+     */
+    fun onCodeScanned(raw: String) {
+        val payload = PairPayload.parse(raw)
+        if (payload == null) {
+            _state.update { it.copy(scannerOpen = false, message = str(R.string.msg_not_afmu_code)) }
+            return
+        }
+        _state.update { it.copy(scannerOpen = false) }
+        viewModelScope.launch { applyPairing(payload) }
+    }
+
+    /**
+     * Stores what the code carried, then finds which of the PC's addresses actually answers —
+     * a multi-homed PC advertises several, and only the one on our subnet will work.
+     */
+    private suspend fun applyPairing(payload: PairPayload) {
+        prefs.peerToken = payload.token
+        _state.update { it.copy(peerToken = payload.token, scanning = true) }
+
+        val reachable = withContext(Dispatchers.IO) {
+            payload.hosts.firstNotNullOfOrNull { host ->
+                val candidate = Discovery.Peer(
+                    name = payload.name.ifBlank { host },
+                    os = payload.os,
+                    host = host,
+                    port = payload.port,
+                )
+                runCatching { client.info(candidate, payload.token) }.getOrNull()?.let { info ->
+                    candidate.copy(name = info.optString("name", candidate.name))
+                }
+            }
+        }
+        _state.update { it.copy(scanning = false) }
+
+        if (reachable == null) {
+            _state.update { it.copy(message = str(R.string.msg_scan_unreachable)) }
+            Bridge.log("Scanned ${payload.hosts.firstOrNull()} but nothing answered")
+            return
+        }
+
+        adoptPeer(reachable)
+        _state.update { it.copy(message = str(R.string.msg_paired_with) + " " + reachable.name) }
+        Bridge.log("Paired with ${reachable.name} by QR code")
+
+        // Hand our own token back so the PC can pull from this phone without typing it.
+        withContext(Dispatchers.IO) {
+            runCatching {
+                client.pair(
+                    peer = reachable,
+                    token = payload.token,
+                    selfName = prefs.deviceName,
+                    selfPort = Bridge.state.value.port.takeIf { it > 0 } ?: prefs.port,
+                    selfToken = prefs.token,
+                )
+            }
+        }.onFailure {
+            // Not fatal: the PC simply has to be given this phone's token by hand.
+            Bridge.log("Peer did not accept our token: ${it.message}")
+        }
+    }
+
+    // ------------------------------------------------------ asking another device to let us in
+
+    /**
+     * Asks [peer] to put an approval prompt on its own screen, and waits for the verdict.
+     * This is the phone-to-phone (and phone-to-PC) path for when nobody wants to copy a
+     * token by hand: allow it over there and this phone gets the token, then hands its own
+     * back so both directions work at once.
+     */
+    fun requestAuthorization(peer: Discovery.Peer) {
+        if (_state.value.outgoingAuth != null) return
+        val code = "%04d".format(SecureRandom().nextInt(10_000))
+        _state.update { it.copy(outgoingAuth = OutgoingAuth(peer = peer, code = code)) }
+        authJob = viewModelScope.launch { runAuthorization(peer, code) }
+    }
+
+    fun cancelAuthorization() {
+        authJob?.cancel()
+        authJob = null
+        _state.update { it.copy(outgoingAuth = null) }
+    }
+
+    private suspend fun runAuthorization(peer: Discovery.Peer, code: String) {
+        val selfPort = Bridge.state.value.port.takeIf { it > 0 } ?: prefs.port
+
+        val ticket = withContext(Dispatchers.IO) {
+            runCatching { client.requestAuth(peer, prefs.deviceName, code, selfPort) }
+        }.getOrElse {
+            finishAuthorization(str(R.string.msg_auth_failed))
+            return
+        }
+
+        if (ticket.outcome != PeerClient.AuthOutcome.OK) {
+            finishAuthorization(
+                when (ticket.outcome) {
+                    PeerClient.AuthOutcome.UNSUPPORTED -> str(R.string.msg_auth_unsupported)
+                    PeerClient.AuthOutcome.DISABLED -> str(R.string.msg_auth_disabled)
+                    PeerClient.AuthOutcome.BUSY -> str(R.string.msg_auth_busy)
+                    else -> str(R.string.msg_auth_failed)
+                }
+            )
+            return
+        }
+
+        _state.update { it.copy(outgoingAuth = it.outgoingAuth?.copy(sending = false)) }
+        Bridge.log("Asked ${peer.name} to approve — code $code")
+
+        // One poll a second, and the deadline is ours as much as theirs: a peer that stops
+        // answering must not leave this dialog up forever.
+        repeat(AuthRequests.TIMEOUT_SEC) { elapsed ->
+            delay(1000)
+            _state.update {
+                it.copy(outgoingAuth = it.outgoingAuth?.copy(
+                    remaining = (AuthRequests.TIMEOUT_SEC - elapsed - 1).coerceAtLeast(0)
+                ))
+            }
+            val reply = withContext(Dispatchers.IO) {
+                runCatching { client.pollAuth(peer, ticket.id) }.getOrNull()
+            } ?: return@repeat // a dropped packet is not a verdict; ask again next second
+
+            when (reply.optString("status")) {
+                "pending" -> return@repeat
+                "granted" -> {
+                    val token = reply.optString("token")
+                    if (token.isEmpty()) {
+                        finishAuthorization(str(R.string.msg_auth_failed))
+                        return
+                    }
+                    adoptGrantedPeer(peer, reply, token)
+                    return
+                }
+                "denied" -> {
+                    finishAuthorization(str(R.string.msg_auth_denied))
+                    return
+                }
+                else -> {
+                    finishAuthorization(str(R.string.msg_auth_expired))
+                    return
+                }
+            }
+        }
+        finishAuthorization(str(R.string.msg_auth_expired))
+    }
+
+    private suspend fun adoptGrantedPeer(peer: Discovery.Peer, reply: JSONObject, token: String) {
+        prefs.peerToken = token
+        val granted = peer.copy(
+            name = reply.optString("name").ifBlank { peer.name },
+            port = reply.optInt("port", peer.port).takeIf { it in 1..65535 } ?: peer.port,
+        )
+        adoptPeer(granted)
+        finishAuthorization(str(R.string.msg_paired_with) + " " + granted.name)
+        Bridge.log("Approved by ${granted.name} — token received")
+
+        // Hand our own token back, so the other side can reach this phone too (§3.9).
+        withContext(Dispatchers.IO) {
+            runCatching {
+                client.pair(
+                    peer = granted,
+                    token = token,
+                    selfName = prefs.deviceName,
+                    selfPort = Bridge.state.value.port.takeIf { it > 0 } ?: prefs.port,
+                    selfToken = prefs.token,
+                )
+            }
+        }.onFailure { Bridge.log("Peer did not accept our token: ${it.message}") }
+    }
+
+    private fun finishAuthorization(message: String) {
+        authJob = null
+        _state.update { it.copy(outgoingAuth = null, message = message) }
+    }
+
+    /** Puts a peer in the list and selects it, wherever it came from. */
+    private fun adoptPeer(peer: Discovery.Peer) {
+        prefs.lastPeer = "${peer.host}:${peer.port}"
+        _state.update { current ->
+            current.copy(
+                peers = (current.peers + peer).distinctBy { "${it.host}:${it.port}" },
+                selectedPeer = peer,
+                peerToken = prefs.peerToken,
+            )
+        }
+    }
+
+    fun clearLog() = Bridge.clearLog()
+
+    fun dismissMessage() = _state.update { it.copy(message = null) }
+
+    // -------------------------------------------------------------------- peer controls
+
+    fun scanForPeers() {
+        if (_state.value.scanning) return
+        _state.update { it.copy(scanning = true) }
+        viewModelScope.launch {
+            val found = withContext(Dispatchers.IO) { Bridge.probePeers(prefs) }
+            _state.update { current ->
+                val selected = current.selectedPeer
+                    ?: found.firstOrNull { "${it.host}:${it.port}" == prefs.lastPeer }
+                    ?: found.firstOrNull()
+                current.copy(scanning = false, peers = found, selectedPeer = selected)
+            }
+            Bridge.log(
+                if (found.isEmpty()) "No PC answered — is `afmu serve` running?"
+                else "Found ${found.size} peer(s)"
+            )
+        }
+    }
+
+    fun selectPeer(peer: Discovery.Peer) {
+        prefs.lastPeer = "${peer.host}:${peer.port}"
+        _state.update { it.copy(selectedPeer = peer) }
+    }
+
+    /** Adds a PC by hand, for networks where UDP broadcast is filtered. */
+    fun addPeerManually(hostPort: String) {
+        val host = hostPort.substringBefore(':').trim()
+        if (host.isEmpty()) return
+        val port = hostPort.substringAfter(':', "").toIntOrNull() ?: Prefs.DEFAULT_PORT
+        viewModelScope.launch {
+            val peer = withContext(Dispatchers.IO) {
+                Discovery(prefs).probeHost(host) ?: Discovery.Peer(host, "linux", host, port)
+            }
+            _state.update {
+                it.copy(peers = (it.peers + peer).distinctBy { p -> "${p.host}:${p.port}" })
+            }
+            selectPeer(peer)
+            Bridge.log("Added peer ${peer.host}:${peer.port}")
+        }
+    }
+
+    fun setPeerToken(token: String) {
+        prefs.peerToken = token.trim()
+        _state.update { it.copy(peerToken = prefs.peerToken) }
+    }
+
+    // ------------------------------------------------------------------------ transfers
+
+    /**
+     * Pushes files picked by the user (or shared into the app) to the selected PC,
+     * scanning for one first when nothing is selected yet — a share from another app
+     * should not dead-end on "pick a peer".
+     */
+    fun sendToPeer(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        viewModelScope.launch {
+            val target = resolvePeer() ?: return@launch
+            if (!peerTokenReady()) return@launch
+            // One at a time, for the same reason downloads are serial: sharing a few
+            // hundred photos would otherwise open that many simultaneous connections,
+            // and the peer spawns a thread per connection.
+            uris.forEach { uri -> sendOne(target, uri) }
+        }
+    }
+
+    /**
+     * The peer to talk to: whatever is selected, otherwise whatever a fresh scan turns up.
+     * Reports the reason and returns null when nothing usable is found.
+     */
+    private suspend fun resolvePeer(): Discovery.Peer? {
+        _state.value.selectedPeer?.let { return it }
+
+        _state.update { it.copy(scanning = true) }
+        val found = withContext(Dispatchers.IO) { Bridge.probePeers(prefs) }
+        val peer = found.firstOrNull { "${it.host}:${it.port}" == prefs.lastPeer }
+            ?: found.firstOrNull()
+        _state.update { it.copy(scanning = false, peers = found, selectedPeer = peer) }
+
+        if (peer == null) {
+            _state.update {
+                it.copy(message = str(R.string.msg_no_pc_found))
+            }
+        } else {
+            prefs.lastPeer = "${peer.host}:${peer.port}"
+        }
+        return peer
+    }
+
+    private fun peerTokenReady(): Boolean {
+        if (_state.value.peerToken.isNotBlank()) return true
+        _state.update { it.copy(message = str(R.string.msg_enter_pc_token)) }
+        return false
+    }
+
+    private suspend fun sendOne(peer: Discovery.Peer, uri: Uri) {
+        val file = withContext(Dispatchers.IO) { client.describe(uri) }
+        val id = ids.incrementAndGet()
+        addTransfer(Transfer(id = id, name = file.name, total = file.size))
+
+        withContext(Dispatchers.IO) {
+            runCatching {
+                client.upload(peer, prefs.peerToken, file) { sent, total ->
+                    updateTransfer(id) { it.copy(moved = sent, total = total) }
+                }
+            }
+        }.onSuccess { savedAs ->
+            updateTransfer(id) {
+                it.copy(status = Status.DONE, moved = it.total.coerceAtLeast(it.moved), detail = savedAs)
+            }
+            Bridge.log("Sent ${file.name} → ${peer.name}")
+        }.onFailure { error ->
+            updateTransfer(id) {
+                it.copy(status = Status.FAILED, detail = error.message ?: "failed")
+            }
+            Bridge.log("Send failed (${file.name}): ${error.message}")
+        }
+    }
+
+    // ------------------------------------------------------------------- remote browsing
+
+    /** Opens the PC's file tree, scanning for a peer first if none is selected yet. */
+    fun openRemoteBrowser() {
+        if (_state.value.browse != null) return
+        viewModelScope.launch {
+            val peer = resolvePeer() ?: return@launch
+            if (!peerTokenReady()) return@launch
+            _state.update { it.copy(browse = RemoteBrowse(peer = peer)) }
+            loadRemote("/")
+        }
+    }
+
+    fun closeRemoteBrowser() = _state.update { it.copy(browse = null) }
+
+    fun browseRemote(path: String) {
+        viewModelScope.launch { loadRemote(path) }
+    }
+
+    fun reloadRemote() {
+        _state.value.browse?.let { browseRemote(it.path) }
+    }
+
+    private suspend fun loadRemote(path: String) {
+        val peer = _state.value.browse?.peer ?: return
+        _state.update { it.copy(browse = it.browse?.copy(loading = true, error = null)) }
+
+        withContext(Dispatchers.IO) {
+            runCatching { client.list(peer, prefs.peerToken, path) }
+        }.onSuccess { json ->
+            val entries = json.optJSONArray("entries")?.let { array ->
+                (0 until array.length()).mapNotNull { i ->
+                    array.optJSONObject(i)?.let { row ->
+                        RemoteEntry(
+                            name = row.optString("name"),
+                            path = row.optString("path"),
+                            isDir = row.optBoolean("dir", false),
+                            size = row.optLong("size", 0),
+                            mtime = row.optLong("mtime", 0),
+                        )
+                    }
+                }
+            }.orEmpty()
+            _state.update {
+                it.copy(
+                    browse = it.browse?.copy(
+                        path = json.optString("path", path).ifEmpty { "/" },
+                        parent = if (json.isNull("parent")) null
+                        else json.optString("parent").takeIf { p -> p.isNotBlank() },
+                        entries = entries,
+                        loading = false,
+                        error = null,
+                    )
+                )
+            }
+        }.onFailure { error ->
+            _state.update {
+                it.copy(
+                    browse = it.browse?.copy(
+                        loading = false,
+                        error = error.message ?: "cannot list $path",
+                    )
+                )
+            }
+        }
+    }
+
+    /** Pulls one remote file into this phone's inbox. */
+    fun receiveFromPeer(entry: RemoteEntry) {
+        if (entry.isDir) return
+        val peer = _state.value.browse?.peer ?: return
+        viewModelScope.launch { receiveOne(peer, entry) }
+    }
+
+    /**
+     * Pulls every file in the folder being shown — subfolders are left alone. Downloads run
+     * one after another: a folder of a few hundred photos would otherwise open that many
+     * simultaneous connections, and the peer spawns a thread per connection.
+     */
+    fun receiveAllInFolder() {
+        val browse = _state.value.browse ?: return
+        val files = browse.files
+        if (files.isEmpty()) return
+        viewModelScope.launch {
+            files.forEach { receiveOne(browse.peer, it) }
+        }
+    }
+
+    private suspend fun receiveOne(peer: Discovery.Peer, entry: RemoteEntry) {
+        val id = ids.incrementAndGet()
+        addTransfer(
+            Transfer(
+                id = id,
+                name = entry.name,
+                direction = Direction.RECEIVE,
+                total = entry.size,
+            )
+        )
+
+        withContext(Dispatchers.IO) {
+            runCatching {
+                client.download(peer, prefs.peerToken, entry.path, prefs) { received, total ->
+                    updateTransfer(id) {
+                        it.copy(moved = received, total = if (total > 0) total else it.total)
+                    }
+                }
+            }
+        }.onSuccess { savedAs ->
+            updateTransfer(id) {
+                it.copy(
+                    status = Status.DONE,
+                    moved = it.total.coerceAtLeast(it.moved),
+                    detail = savedAs,
+                )
+            }
+            Bridge.log("Received ${entry.name} ← ${peer.name}")
+        }.onFailure { error ->
+            updateTransfer(id) {
+                it.copy(status = Status.FAILED, detail = error.message ?: "failed")
+            }
+            Bridge.log("Receive failed (${entry.name}): ${error.message}")
+        }
+    }
+
+    fun clearFinishedTransfers() = _state.update {
+        it.copy(transfers = it.transfers.filter { t -> t.status == Status.RUNNING })
+    }
+
+    private fun addTransfer(transfer: Transfer) =
+        _state.update { it.copy(transfers = it.transfers + transfer) }
+
+    private fun updateTransfer(id: Long, block: (Transfer) -> Transfer) = _state.update { current ->
+        current.copy(transfers = current.transfers.map { if (it.id == id) block(it) else it })
+    }
+}

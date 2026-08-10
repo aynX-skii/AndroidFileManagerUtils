@@ -1,0 +1,112 @@
+<resources>
+    <string name="channel_name">文件传输服务</string>
+
+    <!-- 服务卡片 -->
+    <string name="receive_on_this_phone">在本机接收</string>
+    <string name="server_running">服务运行中，端口 %1$d</string>
+    <string name="server_stopped">服务已停止</string>
+    <string name="network_label">网络：%1$s</string>
+    <string name="no_lan_detected">  ·  未检测到局域网</string>
+    <string name="refresh_network">刷新网络</string>
+    <string name="open_in_pc_browser">在电脑浏览器里打开</string>
+    <string name="no_usable_address">没有可用的网络地址。连上 Wi-Fi，或者用手机的</string>
+    <string name="usb_tethering_hint">USB 网络共享 / 热点连接电脑。</string>
+    <string name="access_token">访问 token</string>
+    <string name="generate_new_token">重新生成 token</string>
+    <string name="incoming_files_land_in">收到的文件落在 %1$s</string>
+
+    <!-- 权限 -->
+    <string name="limited_file_access">文件访问受限</string>
+    <string name="limited_file_access_body">没有「所有文件访问权限」时，电脑只能浏览本 App 自己的目录。</string>
+    <string name="limited_file_access_body2">授予后才能共享整个内部存储。接收文件不需要这个权限。</string>
+    <string name="grant_all_files">授予所有文件访问权限</string>
+
+    <!-- 发送 / 浏览 -->
+    <string name="send_to_a_pc">发送到其它设备</string>
+    <string name="scan_the_lan">扫描局域网</string>
+    <string name="scanning">扫描中…</string>
+    <string name="run_afmu_serve">先在对方设备上打开接收服务，然后扫描或直接「请求授权」。</string>
+    <string name="pc_address_hint">设备地址（192.168.1.20:8765）</string>
+    <string name="add">添加</string>
+    <string name="pc_token_hint">对方设备的 token</string>
+    <string name="choose_files_and_send">选择文件并发送</string>
+    <string name="browse_pc_and_pull">浏览对方设备并拉取文件</string>
+    <string name="up_one_folder">上一级</string>
+    <string name="reload">重新加载</string>
+    <string name="cancel">取消</string>
+    <string name="close">关闭</string>
+    <string name="folder">目录</string>
+    <string name="this_folder_is_empty">这个目录是空的。</string>
+    <string name="pull_all">全部拉取（%1$d）</string>
+    <string name="download">下载</string>
+
+    <!-- 设置 -->
+    <string name="settings">设置</string>
+    <string name="device_name">设备名</string>
+    <string name="save_name">保存名称</string>
+    <string name="discoverable">可被发现</string>
+    <string name="discoverable_desc">应答广播探测，让其它设备自动发现这台手机</string>
+    <string name="allow_writes">允许写入</string>
+    <string name="allow_writes_desc">允许对方上传、新建目录和删除文件</string>
+    <string name="language">语言</string>
+    <string name="language_system">跟随系统</string>
+
+    <!-- 传输 / 日志 -->
+    <string name="activity">活动</string>
+    <string name="clear">清空</string>
+    <string name="clear_finished">清除已结束</string>
+    <string name="nothing_yet">还没有内容。</string>
+    <string name="copy">复制</string>
+    <string name="state_done">完成</string>
+    <string name="state_failed">失败</string>
+
+    <!-- 通知 -->
+    <string name="notif_starting">正在启动…</string>
+    <string name="notif_reachable_at">可通过 %1$s 访问</string>
+    <string name="notif_waiting_network">等待网络</string>
+    <string name="notif_stopped">已停止</string>
+    <string name="notif_stop_action">停止</string>
+
+    <!-- ViewModel 提示 -->
+    <string name="msg_new_token">已生成新 token</string>
+    <string name="msg_no_pc_found">没有找到设备。先在对方设备上打开接收服务，或手动添加它的 IP。</string>
+    <string name="msg_enter_pc_token">请填写对方设备上显示的 token。</string>
+
+    <!-- 扫码配对 -->
+    <string name="scan_to_connect">扫码连接</string>
+    <string name="scan_hint">把摄像头对准电脑上显示的二维码。</string>
+    <string name="scan_hint_where">电脑端 FileBridge：设备页或接收服务页 → 显示二维码。</string>
+    <string name="msg_not_afmu_code">这不是 FileBridge 的配对二维码。</string>
+    <string name="msg_scan_unreachable">扫到了，但电脑没有响应。确认两边在同一个 Wi-Fi？</string>
+    <string name="msg_paired_with">已配对</string>
+    <string name="msg_camera_needed">扫码需要摄像头权限。</string>
+
+    <!-- 授权连接 -->
+    <string name="allow_auth_requests">允许连接请求</string>
+    <string name="allow_auth_requests_desc">没有 token 的设备可以请求连接，由你在这里确认</string>
+    <string name="auth_channel_name">连接请求</string>
+    <string name="auth_channel_desc">有设备想连接本机时提醒你确认</string>
+    <string name="auth_notif_title">%1$s 请求连接</string>
+    <string name="auth_notif_body">来自 %1$s，确认码 %2$s —— 必须和对方屏幕上显示的一致。</string>
+    <string name="auth_dialog_title">允许这次连接？</string>
+    <string name="auth_dialog_body">%1$s（%2$s）正在请求连接本机。</string>
+    <string name="auth_dialog_code_hint">只有对方屏幕上显示的确认码与此相同时才点允许。</string>
+    <string name="auth_dialog_grant_hint">允许即把本机的访问 token 交给对方；重新生成 token 可以随时收回。</string>
+    <string name="auth_allow">允许</string>
+    <string name="auth_deny">拒绝</string>
+    <string name="msg_auth_allowed">已允许连接</string>
+
+    <!-- 主动请求对方授权（手机 ↔ 手机也靠这条） -->
+    <string name="ask_to_connect">请求授权</string>
+    <string name="outgoing_auth_title">等待对方允许</string>
+    <string name="outgoing_auth_sending">正在发送请求…</string>
+    <string name="outgoing_auth_body">已在 %1$s 上弹出提示，请到那台设备上点「允许」。</string>
+    <string name="outgoing_auth_code_hint">对方屏幕上显示的确认码必须和这里一致，否则不要允许。</string>
+    <string name="outgoing_auth_remaining">剩余 %1$d 秒</string>
+    <string name="msg_auth_denied">对方拒绝了本次连接。</string>
+    <string name="msg_auth_expired">请求超时，对方没有确认。</string>
+    <string name="msg_auth_unsupported">对方不支持授权连接，请手动填 token 或扫描它的二维码。</string>
+    <string name="msg_auth_disabled">对方关掉了「允许连接请求」，请在它的设置里打开。</string>
+    <string name="msg_auth_busy">对方正在处理另一个连接请求，稍后再试。</string>
+    <string name="msg_auth_failed">授权请求失败，请稍后重试。</string>
+</resources>
