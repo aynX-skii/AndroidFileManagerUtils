@@ -128,6 +128,7 @@ fun MainScreen(
             ServerCard(state, viewModel) { copyToClipboard(context, it) }
             if (!state.fullStorageAccess) StorageAccessCard(onRequestFullStorage)
             SendCard(state, viewModel, onPickFiles, onScanCode)
+            EncryptionCard(state, viewModel) { copyToClipboard(context, it) }
             PairedDevicesCard(state, viewModel) { copyToClipboard(context, it) }
             SettingsCard(state, viewModel)
             LogCard(state, viewModel)
@@ -758,11 +759,80 @@ private fun BrowserTransferBar(
 }
 
 /**
+ * This device's identity and the encryption switch (PROTOCOL-v2-DRAFT.md §3 / §8.1).
+ *
+ * The fingerprint is shown in full and never truncated: the user compares it against the
+ * other device's screen, and a shortened one hides exactly the mismatch it exists to reveal.
+ */
+@Composable
+private fun EncryptionCard(
+    state: MainViewModel.UiState,
+    viewModel: MainViewModel,
+    onCopy: (String) -> Unit,
+) {
+    SectionCard(stringResource(R.string.encryption)) {
+        if (state.localFingerprint.isEmpty()) {
+            Text(
+                stringResource(R.string.encryption_unavailable),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        } else {
+            Text(
+                stringResource(R.string.encryption_fingerprint),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    state.localFingerprint,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                )
+                IconButton(onClick = { onCopy(state.localFingerprint) }) {
+                    Icon(
+                        Icons.Default.ContentCopy,
+                        contentDescription = stringResource(R.string.copy_fingerprint),
+                    )
+                }
+            }
+            // Where the key lives is worth stating plainly: a software key means a full
+            // device backup can carry the identity away, which the other two cannot.
+            val backing = when (state.identityBacking) {
+                "STRONGBOX" -> stringResource(R.string.encryption_key_strongbox)
+                "TEE" -> stringResource(R.string.encryption_key_tee)
+                "SOFTWARE" -> stringResource(R.string.encryption_key_software)
+                else -> ""
+            }
+            if (backing.isNotEmpty()) {
+                Text(
+                    backing,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (state.identityBacking == "SOFTWARE") {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+            }
+        }
+
+        ToggleRow(
+            title = stringResource(R.string.encrypted_only),
+            subtitle = stringResource(R.string.encrypted_only_desc),
+            checked = state.encryptedOnly,
+            onChange = { viewModel.setEncryptedOnly(it) },
+        )
+    }
+}
+
+/**
  * The v2 pairing table (PROTOCOL-v2-DRAFT.md §4.3).
  *
- * Nothing writes to it yet — that waits on the mTLS handshake in §12 steps 3–6. The list and
- * its delete action ship first deliberately: in v2 a row here *is* an open door, and a door
- * that can be opened before it can be closed is the wrong order to build things in.
+ * A row here *is* an open door: only these fingerprints get through the handshake. Which is
+ * why the delete action shipped before anything could write to the table — a door that can be
+ * opened before it can be closed is the wrong order to build things in.
  */
 @Composable
 private fun PairedDevicesCard(

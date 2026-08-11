@@ -15,6 +15,8 @@ import java.net.SocketException
 import java.net.URLDecoder
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import javax.net.ssl.SSLSocket
+import javax.net.ssl.SSLSocketFactory
 
 /**
  * A small HTTP/1.1 server implemented directly on [ServerSocket]. It serves both the JSON
@@ -27,11 +29,22 @@ import java.util.concurrent.Executors
 class HttpServer(
     private val context: Context,
     private val prefs: Prefs,
+    private val peers: PeerStore? = null,
     private val log: (String) -> Unit = {},
 ) {
 
     @Volatile private var serverSocket: ServerSocket? = null
     @Volatile private var pool: ExecutorService? = null
+
+    /**
+     * v2 (PROTOCOL-v2-DRAFT.md §5). Null means this device can only speak v1 — either there
+     * is no usable identity, or no pairing table to check fingerprints against. Both are
+     * needed: an identity with nothing to compare against is not pinning, it is decoration.
+     */
+    @Volatile private var tlsFactory: SSLSocketFactory? = null
+    @Volatile private var tlsTrust: Tls.PinningTrustManager? = null
+
+    val tlsReady: Boolean get() = tlsFactory != null
 
     @Volatile var port: Int = 0
         private set
@@ -40,6 +53,7 @@ class HttpServer(
 
     fun start(): Int {
         stop()
+        setUpTls()
         val socket = bind(prefs.port)
         val executor = Executors.newCachedThreadPool()
         serverSocket = socket
@@ -48,6 +62,34 @@ class HttpServer(
         Thread({ acceptLoop(socket, executor) }, "afmu-accept").apply { isDaemon = true }.start()
         log("Server listening on port $port")
         return port
+    }
+
+    /**
+     * Builds the TLS stack, or leaves it null and stays v1-only.
+     *
+     * Deliberately silent about *why* on the happy path but loud on failure: "encryption is
+     * off and nobody said so" is the failure mode that matters here.
+     */
+    private fun setUpTls() {
+        tlsFactory = null
+        tlsTrust = null
+        // Plaintext allowed means v1, full stop: see handle() for why this end cannot serve
+        // both at once. The toggle is the whole decision.
+        if (prefs.allowLegacyPlaintext) return
+        val store = peers ?: return
+        val identity = Identity.ensure()
+        if (identity == null) {
+            log("No usable device identity — encrypted connections are unavailable")
+            return
+        }
+        val trust = Tls.PinningTrustManager { fp -> store.isPaired(fp) }
+        val factory = Tls.socketFactory(identity, trust)
+        if (factory == null) {
+            log("TLS could not be set up — encrypted connections are unavailable")
+            return
+        }
+        tlsTrust = trust
+        tlsFactory = factory
     }
 
     fun stop() {
@@ -108,6 +150,14 @@ class HttpServer(
         val input: HttpInput,
         /** Taken from the socket, never from the request — a peer must not name itself. */
         val remoteHost: String,
+        /**
+         * Set once the connection completed a v2 handshake against a paired fingerprint.
+         *
+         * When true the token check is skipped: **a completed handshake against a pinned
+         * key is the authentication** (PROTOCOL-v2-DRAFT.md §5.2). Asking for a token on
+         * top would carry v1's weakness — one long-lived shared secret — into v2.
+         */
+        val pairedPeer: String = "",
     ) {
         val contentLength: Long get() = headers["content-length"]?.toLongOrNull() ?: -1L
         val isChunked: Boolean get() = headers["transfer-encoding"]?.contains("chunked", true) == true
@@ -115,12 +165,54 @@ class HttpServer(
         var bodyConsumed = false
     }
 
-    private fun handle(socket: Socket) {
-        socket.soTimeout = SOCKET_TIMEOUT_MS
-        socket.tcpNoDelay = true
+    /**
+     * Serves one connection, wrapping it in TLS when this device is in encrypted-only mode.
+     *
+     * **This end does not do the first-byte sniffing of PROTOCOL-v2-DRAFT.md §8.1 rule 4, and
+     * it is not an oversight.** Sniffing means peeking the first byte and then handing it
+     * back to the TLS engine, which on the JVM is
+     * `SSLSocketFactory.createSocket(Socket, InputStream consumed, boolean)` — **an overload
+     * Android does not have** (the platform kept the pre-Java-8 signature set). Without it a
+     * consumed ClientHello byte cannot be given back, and the handshake can never complete.
+     *
+     * So the phone serves one protocol at a time, chosen by [Prefs.allowLegacyPlaintext]:
+     * plaintext v1 (the default, and what every existing client speaks) or encrypted v2.
+     * The Linux side keeps serving both on one port, because Qt lets it peek. The cost is
+     * only on the phone-as-server direction, and it is visible in the setting rather than
+     * hidden in a fallback.
+     */
+    private fun handle(raw: Socket) {
+        raw.soTimeout = SOCKET_TIMEOUT_MS
+        raw.tcpNoDelay = true
+        val remoteHost = raw.inetAddress?.hostAddress?.removePrefix("::ffff:").orEmpty()
+
+        var socket = raw
+        var pairedPeer = ""
+
+        val factory = tlsFactory
+        if (factory != null) {
+            val ssl = factory.createSocket(raw, remoteHost, raw.port, true) as SSLSocket
+            Tls.harden(ssl, server = true)
+            val trust = tlsTrust
+            try {
+                // Throws when the peer is unpaired or presents no certificate — and it throws
+                // *here*, before a single request has been read, let alone answered.
+                ssl.startHandshake()
+            } catch (e: Exception) {
+                log("Refused an encrypted connection from $remoteHost: ${e.message}")
+                return
+            }
+            pairedPeer = trust?.lastFingerprint.orEmpty()
+            if (pairedPeer.isEmpty()) return
+            // A completed v2 connection is proof this peer speaks v2; from here on it is
+            // never allowed back to plaintext (draft §8.2 stage 2).
+            peers?.setPinned(pairedPeer, true)
+            log("$remoteHost connected over an encrypted link")
+            socket = ssl
+        }
+
         val input = HttpInput(socket.getInputStream())
         val out = BufferedOutputStream(socket.getOutputStream(), 1 shl 16)
-        val remoteHost = socket.inetAddress?.hostAddress?.removePrefix("::ffff:").orEmpty()
 
         while (serverSocket != null) {
             val requestLine = input.readLine() ?: return
@@ -147,7 +239,8 @@ class HttpServer(
             val queryStart = target.indexOf('?')
             val rawPath = if (queryStart < 0) target else target.substring(0, queryStart)
             val query = if (queryStart < 0) emptyMap() else parseQuery(target.substring(queryStart + 1))
-            val request = Request(method, decode(rawPath), query, headers, input, remoteHost)
+            val request =
+                Request(method, decode(rawPath), query, headers, input, remoteHost, pairedPeer)
 
             try {
                 route(request, out)
@@ -205,7 +298,9 @@ class HttpServer(
         // Guessing the token has to cost something (PROTOCOL.md §2.2). While backed off we
         // do not even compare: the comparison is constant time, but whether we reached it
         // at all is observable, so the cleanest answer is to stop at the door.
-        val throttled = AuthThrottle.retryAfterSec(req.remoteHost)
+        // A paired v2 peer skips the throttle as well: it never guesses a token, and letting
+        // some other device on the same address back it off would be a free denial of service.
+        val throttled = if (req.pairedPeer.isEmpty()) AuthThrottle.retryAfterSec(req.remoteHost) else 0
         if (throttled > 0) {
             drainBody(req)
             sendRetryAfter(out, throttled)
@@ -213,7 +308,10 @@ class HttpServer(
         }
         // Download also accepts a path-bound ticket: it is the one route a browser reaches
         // by plain navigation, where no header can be attached (§2.5).
-        val ok = if (req.path == "/api/download") authorizedForDownload(req) else authorized(req)
+        // v2 skips all of this: handshake done + fingerprint in the pairing table means
+        // authentication already happened (draft §5.2).
+        val ok = req.pairedPeer.isNotEmpty() ||
+            if (req.path == "/api/download") authorizedForDownload(req) else authorized(req)
         if (!ok) {
             drainBody(req)
             val wait = AuthThrottle.noteFailure(req.remoteHost)

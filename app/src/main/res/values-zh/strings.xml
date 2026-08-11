@@ -59,6 +59,16 @@
     <string name="language">语言</string>
     <string name="language_system">跟随系统</string>
 
+    <!-- 加密连接（协议 v2） -->
+    <string name="encryption">加密连接</string>
+    <string name="encryption_fingerprint">本机指纹 —— 配对时对端会显示同一串，两边一致才说明中间没有人。</string>
+    <string name="encryption_unavailable">这台手机上没能建立设备身份，加密连接不可用。</string>
+    <string name="encryption_key_strongbox">私钥在 StrongBox 里</string>
+    <string name="encryption_key_tee">私钥在安全芯片里</string>
+    <string name="encryption_key_software">私钥是软件密钥 —— 这台手机没有安全硬件</string>
+    <string name="encrypted_only">只接受加密连接</string>
+    <string name="encrypted_only_desc">手机一次只能提供一种协议：打开之后，未加密的连接会被直接断开、不回任何响应，网页界面也一起用不了。只有已配对的设备连得上，而目前还没有别的端支持加密。</string>
+
     <!-- 已配对设备（协议 v2 的配对表） -->
     <string name="paired_devices">已配对设备</string>
     <string name="paired_none">还没有配对过的设备。加密连接（协议 v2）启用后，配对成功的设备会出现在这里。</string>

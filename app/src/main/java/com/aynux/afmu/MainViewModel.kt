@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.aynux.afmu.core.AuthRequests
 import com.aynux.afmu.core.Bridge
 import com.aynux.afmu.core.Discovery
+import com.aynux.afmu.core.Identity
 import com.aynux.afmu.core.LocaleHelper
 import com.aynux.afmu.core.PairPayload
 import com.aynux.afmu.core.PeerClient
@@ -107,6 +108,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val pairedPeers: List<PeerRecord> = emptyList(),
         /** Rows the last load discarded as unusable — said out loud rather than swallowed. */
         val pairedDropped: Int = 0,
+        /**
+         * This device's own fingerprint, grouped for reading. Empty when the identity could
+         * not be minted (no AndroidKeyStore), which is also what turns encryption off.
+         */
+        val localFingerprint: String = "",
+        /** Where the private key lives: StrongBox / TEE / software. Shown, not enforced. */
+        val identityBacking: String = "",
+        /** Serve encrypted connections only — the phone cannot serve both at once, see
+         *  [com.aynux.afmu.core.HttpServer.handle]. */
+        val encryptedOnly: Boolean = false,
         val selectedPeer: Discovery.Peer? = null,
         val peerToken: String = "",
         val scanning: Boolean = false,
@@ -168,6 +179,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 _state.update { it.copy(pendingAuth = request) }
             }
         }
+        // Minting the identity touches the keystore, which is slow enough to matter and must
+        // not happen on the main thread.
+        viewModelScope.launch {
+            val info = withContext(Dispatchers.IO) { runCatching { Identity.ensure() }.getOrNull() }
+            _state.update {
+                it.copy(
+                    localFingerprint = info?.fingerprintDisplay.orEmpty(),
+                    identityBacking = info?.backing?.name.orEmpty(),
+                )
+            }
+        }
         viewModelScope.launch {
             peerStore.peers.collect { paired ->
                 _state.update {
@@ -195,6 +217,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 deviceName = prefs.deviceName,
                 writable = prefs.writable,
                 discoverable = prefs.discoverable,
+                encryptedOnly = !prefs.allowLegacyPlaintext,
                 peerToken = prefs.peerToken,
                 allowAuthRequests = prefs.allowAuthRequests,
                 language = prefs.language,
@@ -206,6 +229,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ------------------------------------------------------------------ server controls
+
+    /**
+     * Switches the receiving server between plaintext v1 and encrypted v2.
+     *
+     * Restarts the server when it is running: unlike the other toggles this one changes what
+     * the listening socket *is*, so it cannot take effect on the next connection alone.
+     */
+    fun setEncryptedOnly(value: Boolean) {
+        prefs.allowLegacyPlaintext = !value
+        _state.update { it.copy(encryptedOnly = value) }
+        if (_state.value.serverRunning) {
+            val app = getApplication<Application>()
+            TransferService.stop(app)
+            TransferService.start(app)
+        }
+    }
 
     fun setServerRunning(running: Boolean) {
         val app = getApplication<Application>()

@@ -38,6 +38,20 @@ class Prefs(context: Context) {
         get() = sp.getString(KEY_INBOX, "Download/FileBridge")!!
         set(value) = sp.edit().putString(KEY_INBOX, value).apply()
 
+    /**
+     * Accept unencrypted v1 connections (PROTOCOL-v2-DRAFT.md §8.1).
+     *
+     * With this off, a connection whose first byte is not `0x16` is dropped without any HTTP
+     * response at all — this port then effectively only listens for TLS.
+     *
+     * Default on, while the draft says default off: that is §8.2 stage 3. Encryption has only
+     * just landed and the Linux client is the only thing that speaks it, so turning it off
+     * today would mean nothing can connect.
+     */
+    var allowLegacyPlaintext: Boolean
+        get() = sp.getBoolean(KEY_ALLOW_PLAINTEXT, true)
+        set(value) = sp.edit().putBoolean(KEY_ALLOW_PLAINTEXT, value).apply()
+
     /** Answer discovery probes so the PC can find this phone without typing an IP. */
     var discoverable: Boolean
         get() = sp.getBoolean(KEY_DISCOVERABLE, true)
@@ -103,6 +117,7 @@ class Prefs(context: Context) {
         private const val KEY_NAME = "name"
         private const val KEY_INBOX = "inbox"
         private const val KEY_DISCOVERABLE = "discoverable"
+        private const val KEY_ALLOW_PLAINTEXT = "allowLegacyPlaintext"
         private const val KEY_SERVER_ENABLED = "server_enabled"
         private const val KEY_LANGUAGE = "language"
 

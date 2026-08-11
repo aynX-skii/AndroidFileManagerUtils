@@ -1,9 +1,11 @@
 # FileBridge 传输协议 v2 草案 —— 零信任网络下的加密与身份
 
-状态：**草案，实施中**。§12 清单的第 1–4 步已落地：设备身份、配对表、
-Linux 的服务端与客户端。**Linux ↔ Linux 已经能全程走 v2**——双向钉扎实测通过，
-含 3 MB 流式下载和 Range 续传。Android 一侧（第 5–6 步）还没做，
-所以和手机之间仍然走 v1（[PROTOCOL.md](PROTOCOL.md)）。
+状态：**草案，实施中**。§12 清单的第 1–6 步（主干）已写完：设备身份、配对表、
+两端的服务端与客户端。**Linux ↔ Linux 已实测跑通全程 v2**；Android 一侧
+**代码写完但没在真机上跑过**——headless 环境没有 AndroidKeyStore，
+能在纯 JVM 上验的都验了（见 §5.3），握手本身必须上真机确认。
+配对还得手工填指纹（二维码 v2 与 SAS 是第 7–8 步），所以日常仍走
+v1（[PROTOCOL.md](PROTOCOL.md)）。
 
 这份文档只回答一个问题：**怎么让 AFMU 在不可信网络上也能用。**
 v1 自己写着"不要在不可信网络上开启服务"，v2 的目标就是删掉那句话。
@@ -485,6 +487,40 @@ HTTPS 客户端都能握上手。挡住它的从来不是 ALPN 而是钉扎—�
 2. `allowLegacyPlaintext` **默认开着**，而 §8.1 第 2 条写的是默认关。
    那是 §8.2 第 3 阶段的事：现在客户端一侧还没做，关掉等于本机谁也连不上。
 
+### 5.3 实现状态（Android，第 5–6 步）
+
+| | 做法 |
+|---|---|
+| 服务端 | 接受的 socket 用 `SSLSocketFactory` 包一层，`wantClientAuth`，钉扎在自定义 `X509TrustManager` 里**抛异常** |
+| 客户端 | `HttpsURLConnection` + 同一套 KeyManager/TrustManager，`HostnameVerifier` 恒真（名字这个问题已经被钉扎取代） |
+| 密钥 | 自己写 `X509ExtendedKeyManager` 返回 KeyStore 里的私钥句柄，不走 `KeyManagerFactory`——私钥不可导出，让工厂去"取"它只会以难查的方式失败 |
+| 钉扎失败 | `CertificateException`。**必须是异常**：返回值形式的拒绝会被 TLS 栈忽略，握手照常完成，"校验过了"就成了一句空话 |
+
+#### 已在纯 JVM 上验证的（`TlsPinningTest`，8 项）
+
+真机跑不了，但最容易错、错了又最难查的两件事不需要真机：
+
+- **指纹算得对不对**：拿 Linux 端真实生成的一张证书当向量，期望值由 `openssl`
+  独立算出。Java 的 `PublicKey.getEncoded()` 与 `i2d_X509_PUBKEY` 逐字节相同，已确认。
+  对照组（整张证书的哈希）是不同的值，即钉的确实是 SPKI。
+- **不认识的对端会不会被挡住**：未配对指纹抛异常、空证书链抛异常、
+  `getAcceptedIssuers` 为空。
+
+#### 一处平台限制，改了设计：**Android 端不做首字节分流**
+
+§8.1 第 4 条的分流要"偷看首字节再把它还给 TLS 引擎"，靠的是
+`SSLSocketFactory.createSocket(Socket, InputStream consumed, boolean)`——
+**Android 没有这个重载**（平台保留的是 Java 8 之前的签名集，实测编译期就没有）。
+偷看过的 ClientHello 字节还不回去，握手就永远完不成。
+
+所以手机一次只提供一种协议，由设置项决定：明文 v1（默认，现有客户端都说这个）
+或加密 v2。Linux 端仍然一个端口同时服务两者，因为 Qt 让它 peek。
+代价只落在"手机当服务端"这个方向，而且它出现在设置项里，不是藏在某个回退分支里。
+
+**尚未验证的**：握手本身、AndroidKeyStore 取密钥、`SSLSocketFactory` 包装已 accept 的
+socket 这三件事都要真机。装到设备上之后，第一件事是用 §12 第 1 步那条 `openssl`
+命令复核导出的证书。
+
 ---
 
 ## 6. 发现协议 v2：不再广播设备名
@@ -693,8 +729,10 @@ v2 是为咖啡厅 Wi-Fi 那种真正的零信任场景准备的。
    **（已完成，见 §5.2「实现状态」——没用 `QSslServer`，原因在那里）**
 4. **Linux 客户端**：`QNetworkAccessManager` 走 https，钉扎挂在 `encrypted` 上
    （**不是** `sslErrors`，原因见 §5.2）。**（已完成）**
-5. **Android 服务端**：`SSLServerSocket` + AndroidKeyStore 的 `X509KeyManager` + 自定义 `X509TrustManager`。
+5. **Android 服务端**：包装已 accept 的 socket + AndroidKeyStore 的 `X509KeyManager` + 自定义 `X509TrustManager`。
+   **（代码完成，待真机验证；见 §5.3——没用 `SSLServerSocket`，也不做首字节分流，原因在那里）**
 6. **Android 客户端**：`HttpsURLConnection` 挂同一套 TrustManager/KeyManager。
+   **（代码完成，待真机验证）**
 7. **二维码 v2**：`fp` 参数，`token` 移除，`v=2`。
 8. **SAS 授权流程**：`/api/pair-v2` 三步 commit-reveal（§4.2.3）、8 字符 SAS 计算与两端 UI。
    注意 A 端必须显示**自己算的** SAS，不是服务端回的那个。

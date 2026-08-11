@@ -45,7 +45,9 @@ object Bridge {
             refresh(app)
             return
         }
-        val httpServer = HttpServer(app, prefs) { log(it) }
+        // The pairing table is what makes v2 possible at all: it is the list of fingerprints
+        // allowed through the handshake. Without it the server stays v1-only.
+        val httpServer = HttpServer(app, prefs, PeerStore(app)) { log(it) }
         val port = httpServer.start()
         server = httpServer
 

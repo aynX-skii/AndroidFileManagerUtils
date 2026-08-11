@@ -52,6 +52,18 @@ class PeerStore(context: Context) {
     /** Paired *and* v2-only. An unpaired fingerprint is not pinned. */
     fun isPinned(fp: String?): Boolean = find(fp)?.pinned == true
 
+    /**
+     * Finds a record by address hint, to decide *which* fingerprint to pin for this address.
+     *
+     * **This is not identity.** The address only picks a candidate: picking the wrong one
+     * means the handshake fails on a fingerprint mismatch, which is the safe direction. The
+     * inverse — "the address matched, so trust it" — is what must never be written.
+     */
+    fun findByAddressHint(host: String, port: Int): PeerRecord? {
+        if (host.isEmpty()) return null
+        return _peers.value.firstOrNull { it.lastHost == host && (port <= 0 || it.lastPort == port) }
+    }
+
     fun find(fp: String?): PeerRecord? {
         val key = PeerCodec.normalize(fp) ?: return null
         return _peers.value.firstOrNull { it.fp == key }

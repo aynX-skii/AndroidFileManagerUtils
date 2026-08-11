@@ -9,12 +9,21 @@ import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import javax.net.ssl.HttpsURLConnection
 
 /**
  * The outbound half: pushes files from the phone to a PC running `afmu serve`.
  * Speaks exactly the same protocol [HttpServer] implements, so either side can host.
  */
 class PeerClient(private val context: Context) {
+
+    /**
+     * The pairing table decides whether a peer is reached over TLS (PROTOCOL-v2-DRAFT.md §5).
+     *
+     * Built lazily and kept, because every request needs it and reading SharedPreferences on
+     * each one would be silly.
+     */
+    private val peers by lazy { PeerStore(context) }
 
     data class PickedFile(val uri: Uri, val name: String, val size: Long)
 
@@ -238,7 +247,31 @@ class PeerClient(private val context: Context) {
         val query = params.entries.joinToString("&") { (k, v) ->
             "${encode(k)}=${encode(v)}"
         }
-        val url = URL("${peer.url}/api/$endpoint" + if (query.isEmpty()) "" else "?$query")
+        val suffix = "/api/$endpoint" + if (query.isEmpty()) "" else "?$query"
+
+        // Is this address a peer we have paired with? The address only picks the candidate;
+        // it never establishes identity. Picking wrong means the fingerprint will not match
+        // and the connection is refused — the failure direction is the safe one (§13 Q3).
+        val expected = peers.findByAddressHint(peer.host, peer.port)
+        val pinning = if (expected != null) pinningFactory(expected.fp) else null
+
+        if (pinning != null) {
+            val url = URL("https://${peer.host}:${peer.port}$suffix")
+            return (url.openConnection() as HttpsURLConnection).apply {
+                sslSocketFactory = pinning
+                // The certificate has no meaningful host name in it — pinning replaced that
+                // whole question. Verifying the name here would reject every peer; not
+                // verifying it costs nothing, because the fingerprint check already ran and
+                // throws from inside the handshake.
+                hostnameVerifier = javax.net.ssl.HostnameVerifier { _, _ -> true }
+                requestMethod = method
+                instanceFollowRedirects = false
+                // No token on a v2 connection: the handshake is the authentication (§5.2).
+                setRequestProperty("Accept", "application/json")
+            }
+        }
+
+        val url = URL("${peer.url}$suffix")
         return (url.openConnection() as HttpURLConnection).apply {
             requestMethod = method
             instanceFollowRedirects = false
@@ -247,6 +280,22 @@ class PeerClient(private val context: Context) {
             if (token.isNotEmpty()) setRequestProperty("X-AFMU-Token", token)
             setRequestProperty("Accept", "application/json")
         }
+    }
+
+    /**
+     * A socket factory that presents this device's identity and accepts exactly one peer.
+     *
+     * Returns null when there is no usable identity, which sends the caller down the v1 path
+     * rather than into a "TLS connection that authenticates nobody".
+     *
+     * Note what is *not* here: no fallback. If the handshake fails against a paired peer the
+     * request fails, and nothing retries in plaintext — that retry is the whole downgrade
+     * attack (§8.1 rule 1).
+     */
+    private fun pinningFactory(expectedFp: String): javax.net.ssl.SSLSocketFactory? {
+        val identity = Identity.ensure() ?: return null
+        val trust = Tls.PinningTrustManager { fp -> fp == expectedFp }
+        return Tls.socketFactory(identity, trust)
     }
 
     private fun HttpURLConnection.readJson(): JSONObject {

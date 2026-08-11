@@ -62,6 +62,16 @@
     <string name="language_en">English</string>
     <string name="language_zh">中文</string>
 
+    <!-- 加密连接（协议 v2） -->
+    <string name="encryption">Encrypted connections</string>
+    <string name="encryption_fingerprint">This device\'s fingerprint. The other device shows the same string while pairing; matching them is what rules out a man in the middle.</string>
+    <string name="encryption_unavailable">No device identity could be created on this phone, so encrypted connections are unavailable.</string>
+    <string name="encryption_key_strongbox">Private key in StrongBox</string>
+    <string name="encryption_key_tee">Private key in the secure element</string>
+    <string name="encryption_key_software">Private key in software — this phone has no secure hardware</string>
+    <string name="encrypted_only">Accept encrypted connections only</string>
+    <string name="encrypted_only_desc">This phone serves one protocol at a time: with this on, unencrypted connections are dropped without a reply — including the browser page. Only paired devices can connect, and nothing else speaks encryption yet.</string>
+
     <!-- 已配对设备（协议 v2 的配对表） -->
     <string name="paired_devices">Paired devices</string>
     <string name="paired_none">No paired devices yet. Once encrypted connections (protocol v2) are on, devices you pair with appear here.</string>
