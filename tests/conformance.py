@@ -240,6 +240,16 @@ class Ctx:
             c.request("POST", target, body=body if body is not None else b"", token=self.token, **kw)
             return c.read_response()
 
+    def reset_throttle(self) -> None:
+        """
+        成功校验一次即清零失败计数（§2.2「成功即清零」）。
+
+        故意制造鉴权失败的用例**必须**在每次失败后调它，否则连续失败会超过
+        宽限次数、触发退避，把后面所有用例一起带崩。
+        专门验证退避本身的那条用例除外 —— 它要的就是累积。
+        """
+        self.get("/api/info")
+
     @property
     def writable(self) -> bool:
         return bool(self.info.get("writable", False))
@@ -336,18 +346,33 @@ def t_auth_wrong(ctx: Ctx) -> None:
     expect_eq(r.status, 401, "错 token 的状态码")
 
 
-@case("§2.2 鉴权", "三种写法都认：header / query / Bearer")
-def t_auth_three_ways(ctx: Ctx) -> None:
+@case("§2.2 鉴权", "两种写法都认：header / Bearer")
+def t_auth_two_ways(ctx: Ctx) -> None:
     a = ctx.get("/api/info")
     expect_eq(a.status, 200, "X-AFMU-Token 头")
-
-    b = ctx.get(f"/api/info?token={q(ctx.token)}")
-    expect_eq(b.status, 200, "?token= 查询参数")
 
     with ctx.conn() as c:
         c.request("GET", "/api/info", headers={"Authorization": f"Bearer {ctx.token}"})
         d = c.read_response()
     expect_eq(d.status, 200, "Authorization: Bearer")
+
+
+@case("§2.2 鉴权", "?token= 已移除，必须当作没带")
+def t_auth_no_query_token(ctx: Ctx) -> None:
+    """
+    规范 §2.2。凭证进 URL 会落进代理日志、历史和 Referer，而且
+    <img src="…?token=…"> 这种不带 Origin 的 GET 正好绕过 §2.4 的跨站防护。
+    """
+    for target in (
+        f"/api/info?token={q(ctx.token)}",
+        f"/api/list?token={q(ctx.token)}",
+        f"/api/download?path=%2Fx&token={q(ctx.token)}",
+    ):
+        with ctx.conn() as c:
+            c.request("GET", target)  # 只在 query 里带 token，不带任何头
+            r = c.read_response()
+        ctx.reset_throttle()
+        expect_eq(r.status, 401, f"{target} 应被当作没带 token（§2.2）")
 
 
 @case("§2.3 鉴权", "拒绝带请求体的请求时必须 Connection: close")
@@ -728,6 +753,95 @@ def t_download_missing(ctx: Ctx) -> None:
 
 
 # ---------------------------------------------------------------- §3.4 upload
+
+
+@case("§2.5 下载券", "签券后能凭券下载，且券只对那一个路径有效")
+def t_ticket_roundtrip(ctx: Ctx) -> None:
+    ctx.need_write()
+    payload = b"ticketed content"
+    a = upload_raw(ctx, ctx.scratch, "tk-a.bin", payload)["saved"][0]
+    b = upload_raw(ctx, ctx.scratch, "tk-b.bin", b"other")["saved"][0]
+
+    r = ctx.get(f"/api/ticket?path={q(a)}")
+    if r.status == 404 and "unknown endpoint" in str((r.json or {}).get("error", "")):
+        raise Skip("对端未实现 /api/ticket")
+    expect_eq(r.status, 200, f"签券状态码（{(r.json or {}).get('error')}）")
+    j = r.json or {}
+    ticket = j.get("ticket")
+    expect(isinstance(ticket, str) and "." in ticket, f"券的形状不对: {ticket!r}")
+    expect(int(j.get("expires", 0)) > 0, "expires 应为正")
+
+    # 凭券下载，**不带任何 token 头**
+    with ctx.conn() as c:
+        c.request("GET", f"/api/download?path={q(a)}&ticket={q(ticket)}")
+        dl = c.read_response()
+    expect_eq(dl.status, 200, f"凭券下载失败（{(dl.json or {}).get('error')}）")
+    expect_eq(dl.body, payload, "券取回的内容")
+
+    # 同一张券换个路径必须失效 —— 券绑定路径
+    with ctx.conn() as c:
+        c.request("GET", f"/api/download?path={q(b)}&ticket={q(ticket)}")
+        other = c.read_response()
+    ctx.reset_throttle()
+    expect_eq(other.status, 401, "券被用到别的路径上却放行了（§2.5）")
+
+
+@case("§2.5 下载券", "伪造和篡改的券一律拒")
+def t_ticket_forgery(ctx: Ctx) -> None:
+    ctx.need_write()
+    path = upload_raw(ctx, ctx.scratch, "tk-forge.bin", b"secret")["saved"][0]
+
+    probe = ctx.get(f"/api/ticket?path={q(path)}")
+    if probe.status == 404 and "unknown endpoint" in str((probe.json or {}).get("error", "")):
+        raise Skip("对端未实现 /api/ticket")
+    real = (probe.json or {})["ticket"]
+    exp, _, mac = real.partition(".")
+
+    forged = [
+        f"{exp}.{'A' * len(mac)}",                    # MAC 全错
+        f"{exp}.{mac[:-1]}{'A' if mac[-1] != 'A' else 'B'}",  # 改 MAC 最后一位
+        f"{int(exp) + 3600}.{mac}",                   # 延长有效期，MAC 不变
+        f"1.{mac}",                                   # 早就过期
+        mac,                                          # 没有分隔点
+        f"{exp}.",                                    # 空 MAC
+        "..",
+        "",
+    ]
+    for bad in forged:
+        with ctx.conn() as c:
+            c.request("GET", f"/api/download?path={q(path)}&ticket={q(bad)}")
+            r = c.read_response()
+        # 每次失败后清零，否则连打 8 个会触发 §2.2 的退避，把后面的用例带崩
+        ctx.reset_throttle()
+        expect_eq(r.status, 401, f"伪造的券 {bad!r} 被放行了（§2.5）")
+
+
+@case("§2.5 下载券", "券不能用来签新券，/api/ticket 只认头")
+def t_ticket_not_self_serving(ctx: Ctx) -> None:
+    ctx.need_write()
+    path = upload_raw(ctx, ctx.scratch, "tk-chain.bin", b"x")["saved"][0]
+    probe = ctx.get(f"/api/ticket?path={q(path)}")
+    if probe.status == 404 and "unknown endpoint" in str((probe.json or {}).get("error", "")):
+        raise Skip("对端未实现 /api/ticket")
+    ticket = (probe.json or {})["ticket"]
+
+    with ctx.conn() as c:
+        c.request("GET", f"/api/ticket?path={q(path)}&ticket={q(ticket)}")  # 不带头
+        r = c.read_response()
+    ctx.reset_throttle()
+    expect_eq(r.status, 401, "券被用来签新券了（§2.5）")
+
+
+@case("§2.5 下载券", "越界路径不签券，且不泄露它是否存在")
+def t_ticket_out_of_bounds(ctx: Ctx) -> None:
+    probe = ctx.get("/api/ticket?path=%2Fetc%2Fpasswd")
+    if probe.status == 404 and "unknown endpoint" in str((probe.json or {}).get("error", "")):
+        raise Skip("对端未实现 /api/ticket")
+    expect_eq(probe.status, 404, "越界路径应回 404（§2.5）")
+    expect(
+        (probe.json or {}).get("ticket") is None,
+        "越界路径居然签出了券",
+    )
 
 
 @case("§3.4 upload", "原始字节流 + Content-Length")

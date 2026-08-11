@@ -67,7 +67,9 @@ python3 tests/conformance.py --host 127.0.0.1 --port 8865 --token test2test9
 | 组 | 重点 |
 |---|---|
 | §1 发现 | 应答字段与类型、`afmu` 严格等于 1、**应答里绝不含 token** |
-| §2.2/2.3 鉴权 | 三种 token 写法、401、**拒绝带请求体的请求时必须 `Connection: close`**、被拒后不能把 body 当流水线里的下一个请求 |
+| §2.2/2.3 鉴权 | 两种 token 写法、**`?token=` 必须被当作没带**、401、**拒绝带请求体的请求时必须 `Connection: close`**、被拒后不能把 body 当流水线里的下一个请求 |
+| §2.4 Host/Origin | DNS 名字的 Host → 403、**宽松写法的 IPv4 也要拒**、跨源 Origin → 403（**端口一起比**）、检查排在 token 之前且覆盖 `GET /` |
+| §2.5 下载券 | 签券→凭券下载、**券绑定路径**、伪造/篡改/过期一律拒、券不能签新券、越界路径不签券 |
 | §3.1 info | 必填字段与类型、`Cache-Control: no-store` |
 | §3.2 list | 根列表 `parent: null`、与 `info.roots` 一致、排序规则、**`mtime` 是秒不是毫秒**、目录 `size` 恒为 0 |
 | §3.3 download | Range 四种形式、**畸形 Range 回 416 不是 500**、`filename*=UTF-8''`、HEAD 与 GET 头一致 |
@@ -99,6 +101,9 @@ def t_something(ctx: Ctx) -> None:
 ```
 
 - `expect` / `expect_eq` 的最后一个参数是**失败时打印的说明**，写清楚"期望什么"。
+- **故意制造鉴权失败的用例，每次失败后要调 `ctx.reset_throttle()`。**
+  §2.2 的退避在连续失败 5 次后就开始封禁，不清零的话会把后面所有用例一起带崩。
+  专门验证退避本身的那条用例除外——它要的就是累积。
 - 要检查 `Connection: close`、畸形请求、半关闭这类东西，用 `ctx.conn()` 拿裸连接。
   `http.client` 会把这些正好要测的细节替你抹平。
 - 用例之间不共享状态，顺序无关；写文件一律写进 `ctx.scratch`。

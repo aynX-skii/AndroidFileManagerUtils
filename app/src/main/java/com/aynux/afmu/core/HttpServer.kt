@@ -211,7 +211,10 @@ class HttpServer(
             sendRetryAfter(out, throttled)
             return
         }
-        if (!authorized(req)) {
+        // Download also accepts a path-bound ticket: it is the one route a browser reaches
+        // by plain navigation, where no header can be attached (§2.5).
+        val ok = if (req.path == "/api/download") authorizedForDownload(req) else authorized(req)
+        if (!ok) {
             drainBody(req)
             val wait = AuthThrottle.noteFailure(req.remoteHost)
             if (wait > 0) {
@@ -226,6 +229,7 @@ class HttpServer(
 
         when (req.path) {
             "/api/pair" -> handlePair(req, out)
+            "/api/ticket" -> handleTicket(req, out)
             "/api/info" -> handleInfo(out)
             "/api/list" -> handleList(req, out)
             "/api/download" -> handleDownload(req, out)
@@ -239,13 +243,28 @@ class HttpServer(
         }
     }
 
-    /** Three equivalent ways to send the token; take the first non-empty one (PROTOCOL.md §2.2). */
+    /**
+     * Two equivalent ways to send the token; take the first non-empty one (PROTOCOL.md §2.2).
+     *
+     * `?token=` used to be a third. It is gone: a credential in the URL lands in proxy logs,
+     * browser history and `Referer`. What it was there for — a browser `<a href>` that
+     * cannot set a header — is now served by [DownloadTicket] (§2.5).
+     */
     private fun authorized(req: Request): Boolean {
         val supplied = req.headers["x-afmu-token"]?.takeIf { it.isNotEmpty() }
-            ?: req.query["token"]?.takeIf { it.isNotEmpty() }
             ?: req.headers["authorization"]?.removePrefix("Bearer ")?.trim()?.takeIf { it.isNotEmpty() }
             ?: return false
         return constantTimeEquals(supplied, prefs.token)
+    }
+
+    /**
+     * Download is the one route that also takes a ticket, because it is the one a browser
+     * reaches by plain navigation. The ticket is bound to this exact path (§2.5).
+     */
+    private fun authorizedForDownload(req: Request): Boolean {
+        if (authorized(req)) return true
+        val ticket = req.query["ticket"]?.takeIf { it.isNotEmpty() } ?: return false
+        return DownloadTicket.verify(prefs.token, req.query["path"].orEmpty(), ticket)
     }
 
     // ---------------------------------------------------------------------- endpoints
@@ -362,6 +381,32 @@ class HttpServer(
                 .put("name", prefs.deviceName)
                 .put("os", "android")
                 .put("protocol", PROTOCOL_VERSION),
+            true,
+        )
+    }
+
+    /**
+     * Mints a download ticket for one path (PROTOCOL.md §2.5). Header-authenticated, so the
+     * page has to already hold the token; the ticket only spares the `<a href>` from
+     * carrying it.
+     *
+     * The path is resolved first: handing out a ticket for something out of bounds would
+     * confirm to the caller that it exists.
+     */
+    private fun handleTicket(req: Request, out: OutputStream) {
+        drainBody(req)
+        val path = req.query["path"].orEmpty()
+        val file = Storage.resolve(context, path)
+        if (file == null || !file.isFile || !file.canRead()) {
+            sendJson(out, "404 Not Found", jsonError("no readable file at $path"), true)
+            return
+        }
+        sendJson(
+            out, "200 OK",
+            JSONObject()
+                .put("ok", true)
+                .put("ticket", DownloadTicket.issue(prefs.token, path))
+                .put("expires", DownloadTicket.TTL_SEC),
             true,
         )
     }

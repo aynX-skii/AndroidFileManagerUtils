@@ -345,9 +345,32 @@ function api(endpoint, params, method) {
   });
 }
 
-/** Download links carry the token in the query so the browser can fetch them directly. */
-function downloadUrl(entry) {
-  return apiUrl('download', { path: entry.path, token: state.token });
+/**
+ * Download links used to carry the token in the query. They no longer can: a credential in
+ * a URL ends up in proxy logs, history and Referer, so the API refuses one (PROTOCOL.md §2.5).
+ *
+ * Instead the server mints a short-lived ticket bound to this one path. We cannot compute
+ * the MAC here — crypto.subtle is unavailable over plain HTTP — so we ask for it, then
+ * navigate. Minting happens on click rather than while rendering the list, so a directory
+ * of 500 files does not fire 500 requests nobody asked for.
+ */
+function ticketedUrl(entry) {
+  return api('ticket', { path: entry.path }).then(function (res) {
+    return apiUrl('download', { path: entry.path, ticket: res.ticket });
+  });
+}
+
+function startDownload(entry) {
+  return ticketedUrl(entry).then(function (url) {
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = entry.name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }).catch(function (err) {
+    banner(err.message || 'download failed');
+  });
 }
 
 // ------------------------------------------------------------------------ session state
@@ -531,10 +554,12 @@ function render() {
         if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); load(entry.path); }
       };
     } else {
+      // href stays a placeholder: the real URL needs a ticket, and that is one round trip
+      // we only want to spend when the user actually clicks.
       label = document.createElement('a');
-      label.href = downloadUrl(entry);
-      label.download = entry.name;
+      label.href = '#';
       label.textContent = entry.name;
+      label.onclick = function (ev) { ev.preventDefault(); startDownload(entry); };
     }
     wrap.appendChild(label);
     name.appendChild(wrap);
@@ -621,14 +646,7 @@ function downloadSelected() {
     .filter(function (e) { return !e.dir; });
 
   files.forEach(function (entry, i) {
-    setTimeout(function () {
-      var a = document.createElement('a');
-      a.href = downloadUrl(entry);
-      a.download = entry.name;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-    }, i * 350);
+    setTimeout(function () { startDownload(entry); }, i * 350);
   });
   if (files.length > 1) {
     banner(files.length + ' downloads queued — allow multiple downloads if the browser asks.', 'ok');
