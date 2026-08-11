@@ -107,6 +107,12 @@ object ProtocolConstants {
     /** 展示时每几个字符空一格 */
     const val FINGERPRINT_GROUP_SIZE = 5
 
+    /** ALPN。两端不一致时握手会以 no_application_protocol 失败，而不是悄悄退回 v1 —— 这正是想要的（§5） */
+    const val TLS_ALPN = "afmu/2"
+
+    /** TLS record 的 handshake 类型 0x16。服务端靠首字节把 v2 和 v1 明文分流（§8.1 第 4 条） */
+    const val TLS_HELLO_FIRST_BYTE = 22
+
     // ---- 下载券 ---------------------------------------------------------
     // PROTOCOL.md §2.5。浏览器 <a href> 带不了自定义头，用它顶替 ?token=。
 

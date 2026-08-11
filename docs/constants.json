@@ -84,7 +84,11 @@
           "doc": "20 年。钉扎之后有效期本来就没有意义，只是别让 TLS 栈以过期为由拒绝" },
         { "name": "fingerprintAlphabet", "value": "ABCDEFGHJKLMNPQRSTUVWXYZ23456789",
           "doc": "base32 字母表，去掉 I 和 O（0 和 1 本来就不在里面）—— 这串要用户对着屏幕比对" },
-        { "name": "fingerprintGroupSize", "value": 5, "doc": "展示时每几个字符空一格" }
+        { "name": "fingerprintGroupSize", "value": 5, "doc": "展示时每几个字符空一格" },
+        { "name": "tlsAlpn", "value": "afmu/2",
+          "doc": "ALPN。两端不一致时握手会以 no_application_protocol 失败，而不是悄悄退回 v1 —— 这正是想要的（§5）" },
+        { "name": "tlsHelloFirstByte", "value": 22,
+          "doc": "TLS record 的 handshake 类型 0x16。服务端靠首字节把 v2 和 v1 明文分流（§8.1 第 4 条）" }
       ]
     },
     {
