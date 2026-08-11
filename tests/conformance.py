@@ -399,6 +399,83 @@ def t_auth_reject_no_pipeline_garbage(ctx: Ctx) -> None:
 # ------------------------------------------------------------------ §3.1 info
 
 
+@case("§2.4 Host", "DNS 名字的 Host → 403")
+def t_host_rebinding(ctx: Ctx) -> None:
+    """
+    规范 §2.4。攻击者页面请求 http://evil.example.com:8765/，域名解析到本机。
+    同源策略帮不上忙 —— 源就是攻击者的域名。唯一的分辨点就是 Host 头。
+    """
+    for bad in (
+        "evil.example.com",
+        f"evil.example.com:{ctx.port}",
+        "attacker.internal:8765",
+        "afmu.example.org",
+    ):
+        with ctx.conn() as c:
+            c.request("GET", "/api/info", headers={"Host": bad}, token=ctx.token)
+            r = c.read_response()
+        expect_eq(r.status, 403, f"Host: {bad} 应被拒（§2.4）")
+        expect_eq((r.json or {}).get("ok"), False, "ok")
+
+
+@case("§2.4 Host", "宽松写法的 IPv4 也要拒")
+def t_host_loose_ipv4(ctx: Ctx) -> None:
+    """宽松的 IP 解析器正是 rebinding 想要的：只接受四段十进制、每段 0..255。"""
+    for bad in ("0x7f.0.0.1", "1.2.3", "2130706433", "127.0.0.1.5", "999.1.1.1", "1.2.3.4.5"):
+        with ctx.conn() as c:
+            c.request("GET", "/api/info", headers={"Host": f"{bad}:{ctx.port}"}, token=ctx.token)
+            r = c.read_response()
+        expect_eq(r.status, 403, f"Host: {bad} 是宽松写法，应被拒（§2.4）")
+
+
+@case("§2.4 Host", "IP 字面量 / localhost / .local 放行")
+def t_host_allowed_shapes(ctx: Ctx) -> None:
+    for good in (f"{ctx.host}:{ctx.port}", f"localhost:{ctx.port}", f"some-box.local:{ctx.port}"):
+        with ctx.conn() as c:
+            c.request("GET", "/api/info", headers={"Host": good}, token=ctx.token)
+            r = c.read_response()
+        expect_eq(r.status, 200, f"Host: {good} 应放行（§2.4）")
+
+
+@case("§2.4 Origin", "跨源的 Origin → 403，缺失则放行")
+def t_origin_check(ctx: Ctx) -> None:
+    authority = f"{ctx.host}:{ctx.port}"
+
+    # 缺失：原生客户端就是这样，必须放行
+    expect_eq(ctx.get("/api/info").status, 200, "没有 Origin 时应放行（§2.4）")
+
+    # 同源：浏览器界面自己发的
+    with ctx.conn() as c:
+        c.request("GET", "/api/info", headers={"Origin": f"http://{authority}"}, token=ctx.token)
+        same = c.read_response()
+    expect_eq(same.status, 200, "同源的 Origin 应放行")
+
+    for bad in (
+        "http://evil.example.com",
+        f"http://evil.example.com:{ctx.port}",
+        "null",
+        f"http://{ctx.host}:9999",  # 同主机不同端口 —— 端口必须一起比
+    ):
+        with ctx.conn() as c:
+            c.request("GET", "/api/info", headers={"Origin": bad}, token=ctx.token)
+            r = c.read_response()
+        expect_eq(r.status, 403, f"Origin: {bad} 应被拒（§2.4）")
+
+
+@case("§2.4 Host", "检查排在 token 之前，也覆盖 GET /")
+def t_host_check_ordering(ctx: Ctx) -> None:
+    """这两条和有没有凭证无关，也不能只保护 /api/*：浏览器界面才是入口。"""
+    with ctx.conn() as c:
+        c.request("GET", "/api/info", headers={"Host": "evil.example.com"})  # 连 token 都不带
+        r = c.read_response()
+    expect_eq(r.status, 403, "坏 Host 应在 token 检查之前就被拒（不是 401）")
+
+    with ctx.conn() as c:
+        c.request("GET", "/", headers={"Host": "evil.example.com"})
+        root = c.read_response()
+    expect_eq(root.status, 403, "GET / 也必须过 Host 检查（§2.4）")
+
+
 @case("§3.1 info", "必填字段齐全且类型正确")
 def t_info_fields(ctx: Ctx) -> None:
     r = ctx.get("/api/info")

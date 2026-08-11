@@ -167,6 +167,23 @@ class HttpServer(
     }
 
     private fun route(req: Request, out: OutputStream) {
+        // DNS rebinding / cross-site protection (PROTOCOL.md §2.4). Ahead of every route,
+        // including GET / — the browser UI is precisely the way in for these.
+        val hostHeader = req.headers["host"].orEmpty()
+        if (!isLocalHostHeader(hostHeader)) {
+            drainBody(req)
+            log("Refused a request with Host \"$hostHeader\" (looks like DNS rebinding)")
+            sendJson(out, "403 Forbidden", jsonError("host not allowed"), false)
+            return
+        }
+        val origin = req.headers["origin"].orEmpty()
+        if (!originMatchesHost(origin, hostHeader)) {
+            drainBody(req)
+            log("Refused a cross-origin request from \"$origin\"")
+            sendJson(out, "403 Forbidden", jsonError("cross-origin request refused"), false)
+            return
+        }
+
         if (req.path == "/" || req.path == "/index.html") {
             sendText(out, "200 OK", "text/html; charset=utf-8", WebUi.page(prefs.deviceName, LocaleHelper.effective(context) == Prefs.LANG_CHINESE), true)
             return
@@ -806,6 +823,96 @@ class HttpServer(
                 index++
             }
             return String.format(java.util.Locale.US, "%.1f %s", value, units[index])
+        }
+
+        /** Hostname out of a Host/Origin authority: strips the port and IPv6 brackets. */
+        private fun hostNameOf(raw: String): String {
+            val s = raw.trim()
+            if (s.isEmpty()) return ""
+            if (s.startsWith("[")) {
+                // [::1]:8765 — everything inside the brackets is the address
+                val close = s.indexOf(']')
+                return if (close > 0) s.substring(1, close) else ""
+            }
+            // A bare IPv6 literal (not bracketed — out of spec but seen in the wild) has
+            // several colons, and then there is no port to split off.
+            if (s.count { it == ':' } > 1) return s
+            val colon = s.indexOf(':')
+            return if (colon >= 0) s.substring(0, colon) else s
+        }
+
+        private fun portOf(authority: String, default: Int = 80): Int {
+            val s = authority.trim()
+            val name = hostNameOf(s)
+            if (name.isEmpty()) return default
+            val rest = s.substring(if (s.startsWith("[")) name.length + 2 else name.length)
+            return if (rest.startsWith(":")) rest.substring(1).toIntOrNull() ?: default else default
+        }
+
+        private fun isIpLiteral(name: String): Boolean {
+            if (name.isEmpty()) return false
+            // IPv6: only hex digits, colons and a possible zone/embedded-v4 tail
+            if (name.contains(':')) {
+                return name.all { it.isDigit() || it in "abcdefABCDEF:.%" } && name.contains(':')
+            }
+            // IPv4: four decimal octets. Deliberately strict — "1.2.3" and "0x7f.1" are not
+            // accepted, because a lax parser here is exactly what a rebinding host wants.
+            val parts = name.split('.')
+            if (parts.size != 4) return false
+            return parts.all { part ->
+                part.isNotEmpty() && part.length <= 3 && part.all { it.isDigit() } &&
+                    (part.toIntOrNull() ?: -1) in 0..255
+            }
+        }
+
+        /**
+         * Does the Host header point at *this machine*? (PROTOCOL.md §2.4) — blocks DNS
+         * rebinding.
+         *
+         * The attack: the victim opens the attacker's page, which requests
+         * `http://evil.example.com:8765/` where that name resolves to 192.168.1.42 — the
+         * victim's phone. Same-origin policy is no help; the origin *is* the attacker's
+         * domain. The one thing the server can tell them apart by is the Host header: it
+         * says evil.example.com, not an IP or a `.local` name.
+         *
+         * So the rule is just a shape check: the hostname must be an IP literal,
+         * `localhost`, or end in `.local`. We deliberately do not enumerate our own
+         * addresses — those drift with DHCP and multiple interfaces — and we do not need
+         * to: rebinding requires a DNS name, and none of those three shapes is one.
+         */
+        fun isLocalHostHeader(hostHeader: String): Boolean {
+            val name = hostNameOf(hostHeader)
+            if (name.isEmpty()) return false // HTTP/1.1 requires Host; absent is malformed
+            if (name.equals("localhost", ignoreCase = true)) return true
+            if (name.endsWith(".local", ignoreCase = true)) return true
+            return isIpLiteral(name)
+        }
+
+        /**
+         * Does the Origin match our own Host? (PROTOCOL.md §2.4) — blocks cross-site calls.
+         *
+         * Native clients send no Origin, so **absent means allowed**; once present it has
+         * to line up. Browsers always attach Origin to cross-origin fetches and form POSTs,
+         * which is what stops an attacker's page from driving the API directly by IP.
+         */
+        fun originMatchesHost(origin: String, hostHeader: String): Boolean {
+            val o = origin.trim()
+            if (o.isEmpty()) return true
+            // Some browsers send the literal "null" from opaque origins. Not us.
+            if (o.equals("null", ignoreCase = true)) return false
+
+            val scheme = o.substringBefore("://", "").lowercase()
+            if (scheme.isEmpty()) return false
+            val authority = o.substringAfter("://").substringBefore('/')
+            if (hostNameOf(authority).isEmpty()) return false
+
+            if (!hostNameOf(authority).equals(hostNameOf(hostHeader), ignoreCase = true)) {
+                return false
+            }
+            // The port has to match too. Comparing only the hostname would let any other
+            // HTTP service on this same device (a page on :9999) drive our API.
+            val originPort = portOf(authority, if (scheme == "https") 443 else 80)
+            return originPort == portOf(hostHeader)
         }
 
         fun constantTimeEquals(a: String, b: String): Boolean {
