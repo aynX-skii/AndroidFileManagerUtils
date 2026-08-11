@@ -303,7 +303,7 @@ def discover(timeout: float = 2.0) -> list[dict[str, Any]]:
     return list(found.values())
 
 
-@case("§1 发现", "应答是单行 JSON 且字段齐全")
+@case("§1 发现", "应答是单行 JSON，afmu 和 port 必须有")
 def t_discovery_shape(ctx: Ctx) -> None:
     peers = [p for p in discover() if p["_host"] in (ctx.host, "127.0.0.1")]
     if not peers:
@@ -311,8 +311,30 @@ def t_discovery_shape(ctx: Ctx) -> None:
     p = peers[0]
     expect_eq(p.get("afmu"), 1, "afmu 版本字段")
     expect(isinstance(p.get("port"), int) and p["port"] > 0, f"port 必须是正整数，实到 {p.get('port')!r}")
-    expect(isinstance(p.get("name"), str) and p["name"], "name 必须是非空字符串")
-    expect(p.get("os") in ("android", "linux"), f"os 应为 android/linux，实到 {p.get('os')!r}")
+    # name / os 从 §1.5 起是可选的 —— 只在配对模式下才给
+    if "os" in p:
+        expect(p["os"] in ("android", "linux"), f"给了 os 就得是 android/linux，实到 {p['os']!r}")
+
+
+@case("§1.5 发现", "常态应答不含设备名和系统")
+def t_discovery_no_metadata(ctx: Ctx) -> None:
+    """
+    规范 §1.5。往 UDP 8766 发一个包，局域网里任何人都能收到
+    「这台机器叫 icelab、跑 Linux」—— 一次不需要任何凭证的信息泄露，
+    而且发生在用户完全不知情的时候。
+
+    只有用户显式点了「允许被发现」才短暂公开，那是界面上的操作，
+    这里测不了；这条用例守的是**默认**行为。
+    """
+    peers = [p for p in discover() if p["_host"] in (ctx.host, "127.0.0.1")]
+    if not peers:
+        raise Skip("没收到发现应答")
+    for p in peers:
+        leaked = [k for k in ("name", "os") if k in p]
+        expect(
+            not leaked,
+            f"常态发现应答泄露了 {leaked}（§1.5）—— 这些只该在配对模式下出现: {p}",
+        )
 
 
 @case("§1 发现", "应答里绝不含 token")

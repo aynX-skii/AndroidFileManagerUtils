@@ -91,6 +91,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val inbox: String = "",
         val writable: Boolean = true,
         val discoverable: Boolean = true,
+        /** Seconds left of pairing mode; 0 when off (PROTOCOL.md §1.5). */
+        val pairingSecondsLeft: Int = 0,
         val fullStorageAccess: Boolean = false,
         val peers: List<Discovery.Peer> = emptyList(),
         val selectedPeer: Discovery.Peer? = null,
@@ -124,6 +126,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The poll loop of an authorization we started; cancelled when the user backs out. */
     private var authJob: Job? = null
+    private var pairingTicker: Job? = null
 
     init {
         reloadPrefs()
@@ -214,6 +217,31 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setDiscoverable(value: Boolean) {
         prefs.discoverable = value
         _state.update { it.copy(discoverable = value) }
+    }
+
+    /**
+     * Publishes this phone's name in discovery replies for one minute (PROTOCOL.md §1.5).
+     *
+     * The countdown is driven here rather than read on demand, because the button has to
+     * tick down on screen and nothing else would wake the UI.
+     */
+    fun startPairingMode() {
+        Discovery.startPairingMode()
+        pairingTicker?.cancel()
+        pairingTicker = viewModelScope.launch {
+            while (Discovery.pairingMode()) {
+                _state.update { it.copy(pairingSecondsLeft = Discovery.pairingSecondsLeft()) }
+                delay(1000)
+            }
+            _state.update { it.copy(pairingSecondsLeft = 0) }
+        }
+    }
+
+    fun stopPairingMode() {
+        Discovery.stopPairingMode()
+        pairingTicker?.cancel()
+        pairingTicker = null
+        _state.update { it.copy(pairingSecondsLeft = 0) }
     }
 
     fun setAllowAuthRequests(value: Boolean) {

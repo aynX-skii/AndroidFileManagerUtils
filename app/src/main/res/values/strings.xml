@@ -8,6 +8,10 @@
     <string name="server_stopped">Server stopped</string>
     <!-- Kept on screen the whole time the server is up. v1 is plain HTTP; saying so only in
          the docs means the person deciding whether to switch this on never sees it. -->
+    <!-- Discovery replies carry no device name until the user asks for it (PROTOCOL.md §1.5) -->
+    <string name="make_discoverable">Make discoverable</string>
+    <string name="discoverable_for">Discoverable · %1$ds</string>
+    <string name="discoverable_hint">Other devices see only an address until you tap this. For one minute they also see this phone\'s name.</string>
     <string name="unencrypted_badge">Unencrypted</string>
     <string name="unencrypted_detail">Traffic is plain HTTP. Anyone on this network can read file names and contents. Use it on networks you trust.</string>
     <string name="network_label">Network: %1$s</string>

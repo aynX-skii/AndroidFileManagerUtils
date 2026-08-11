@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -254,6 +255,28 @@ private fun ServerCard(
             // "plain HTTP" only in the docs means the person deciding whether to leave this
             // running never reads it.
             UnencryptedNotice()
+
+            // Discovery replies carry no device name until this is tapped (§1.5).
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (state.pairingSecondsLeft > 0) {
+                    FilledTonalButton(onClick = { viewModel.stopPairingMode() }) {
+                        Icon(Icons.Filled.Wifi, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(stringResource(R.string.discoverable_for, state.pairingSecondsLeft))
+                    }
+                } else {
+                    OutlinedButton(onClick = { viewModel.startPairingMode() }) {
+                        Icon(Icons.Filled.Wifi, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(stringResource(R.string.make_discoverable))
+                    }
+                }
+            }
+            Text(
+                stringResource(R.string.discoverable_hint),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
 
             if (state.urls.isEmpty()) {
                 Text(

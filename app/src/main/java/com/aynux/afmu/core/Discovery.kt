@@ -139,11 +139,54 @@ class Discovery(
     companion object {
         const val PROBE_PREFIX = "AFMU-DISCOVER"
 
+        /** Must match `afmu::kPairingModeSec` on the Linux side. */
+        const val PAIRING_MODE_SEC = 60L
+        private val PAIRING_MODE_MS = PAIRING_MODE_SEC * 1000
+
+        /**
+         * Pairing mode (PROTOCOL.md §1.5).
+         *
+         * Normally the reply carries **no device name and no OS**: one UDP packet, and
+         * anyone on the LAN learns "this phone is called Pixel 8 and runs Android" — an
+         * information leak that needs no credential at all and happens without the owner
+         * ever knowing. Only after the user explicitly taps "make discoverable" do we
+         * answer in full, and only for [PAIRING_MODE_SEC].
+         *
+         * That shrinks the window in which a stranger can read the device name from
+         * *forever* down to *the minute the user asked for*.
+         */
+        @Volatile
+        private var pairingUntil = 0L
+
+        fun startPairingMode(now: Long = System.currentTimeMillis()) {
+            pairingUntil = now + PAIRING_MODE_MS
+        }
+
+        fun stopPairingMode() {
+            pairingUntil = 0
+        }
+
+        fun pairingMode(now: Long = System.currentTimeMillis()): Boolean = pairingUntil > now
+
+        /** Seconds left, for the countdown; 0 when off. */
+        fun pairingSecondsLeft(now: Long = System.currentTimeMillis()): Int {
+            val left = pairingUntil - now
+            return if (left <= 0) 0 else ((left + 999) / 1000).toInt()
+        }
+
+        /** Names we have seen before, so a device we already know still shows a name (§1.5). */
+        private val knownNames = HashMap<String, String>()
+        private val knownOs = HashMap<String, String>()
+
         fun describe(prefs: Prefs, serverPort: Int): JSONObject = JSONObject()
             .put("afmu", HttpServer.PROTOCOL_VERSION)
-            .put("name", prefs.deviceName)
-            .put("os", "android")
             .put("port", serverPort)
+            .also {
+                if (pairingMode()) {
+                    it.put("name", prefs.deviceName)
+                    it.put("os", "android")
+                }
+            }
 
         private fun parse(host: String, raw: String): Peer? {
             val json = runCatching { JSONObject(raw.trim()) }.getOrNull() ?: return null
@@ -152,9 +195,20 @@ class Discovery(
             if (json.optInt("afmu", 0) != HttpServer.PROTOCOL_VERSION) return null
             val port = json.optInt("port", 0)
             if (port <= 0) return null
+
+            // name/os are optional as of §1.5 — a peer outside pairing mode sends neither.
+            // Remember them once seen, so the everyday list still shows names for devices we
+            // already know and only strangers appear as a bare address.
+            val key = "$host:$port"
+            val name = json.optString("name").takeIf { it.isNotEmpty() }
+                ?.also { knownNames[key] = it }
+                ?: knownNames[key]
+            val os = json.optString("os").takeIf { it.isNotEmpty() }
+                ?.also { knownOs[key] = it }
+                ?: knownOs[key]
             return Peer(
-                name = json.optString("name", host),
-                os = json.optString("os", "unknown"),
+                name = name ?: host,
+                os = os ?: "unknown",
                 host = host,
                 port = port,
             )

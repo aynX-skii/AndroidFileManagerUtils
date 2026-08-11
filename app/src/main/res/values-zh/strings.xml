@@ -7,6 +7,10 @@
     <string name="server_stopped">服务已停止</string>
     <!-- 服务开着就一直显示。v1 是明文 HTTP，只写在文档里的话，
          真正在决定「要不要开」的那个人根本看不到。 -->
+    <!-- 发现应答默认不带设备名，用户点了才短暂公开（PROTOCOL.md §1.5） -->
+    <string name="make_discoverable">允许被发现</string>
+    <string name="discoverable_for">可被发现 · %1$d 秒</string>
+    <string name="discoverable_hint">在你点这里之前，别的设备只能看到一个地址。点了之后的一分钟里，它们也能看到本机名字。</string>
     <string name="unencrypted_badge">未加密</string>
     <string name="unencrypted_detail">流量是明文 HTTP。同一网络里的任何人都能看到文件名和文件内容。请只在信任的网络里使用。</string>
     <string name="network_label">网络：%1$s</string>
