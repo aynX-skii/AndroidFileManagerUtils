@@ -520,14 +520,15 @@ private fun OutgoingAuthDialog(pending: MainViewModel.OutgoingAuth, onCancel: ()
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Text(
-                    pending.code,
+                    if (pending.sas.isNotEmpty()) pending.sas else pending.code,
                     style = MaterialTheme.typography.headlineMedium,
                     fontFamily = FontFamily.Monospace,
                     modifier = Modifier.fillMaxWidth(),
                     textAlign = TextAlign.Center,
                 )
                 Text(
-                    stringResource(R.string.outgoing_auth_code_hint),
+                    if (pending.sas.isNotEmpty()) stringResource(R.string.pair_compare_hint)
+                    else stringResource(R.string.outgoing_auth_code_hint),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

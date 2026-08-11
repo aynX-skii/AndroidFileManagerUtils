@@ -62,6 +62,13 @@
     <string name="language_en">English</string>
     <string name="language_zh">中文</string>
 
+    <string name="msg_pair_no_identity">This phone has no usable identity, so encrypted pairing is unavailable.</string>
+    <string name="msg_pair_failed">Pairing failed — the compare codes did not match, or the device did not answer.</string>
+    <string name="msg_pair_declined">The other device declined the pairing.</string>
+    <string name="msg_pair_timeout">Pairing timed out — nobody confirmed on the other device.</string>
+    <string name="pair_compare_code">Compare code</string>
+    <string name="pair_compare_hint">This code was computed on this phone, not sent by them. If it matches what is on their screen, nobody is relaying between you.</string>
+
     <!-- 加密连接（协议 v2） -->
     <string name="encryption">Encrypted connections</string>
     <string name="encryption_fingerprint">This device\'s fingerprint. The other device shows the same string while pairing; matching them is what rules out a man in the middle.</string>

@@ -9,7 +9,9 @@ import com.aynux.afmu.core.Bridge
 import com.aynux.afmu.core.Discovery
 import com.aynux.afmu.core.Identity
 import com.aynux.afmu.core.LocaleHelper
+import com.aynux.afmu.core.Base32
 import com.aynux.afmu.core.PairPayload
+import com.aynux.afmu.core.PairSas
 import com.aynux.afmu.core.PeerClient
 import com.aynux.afmu.core.PeerRecord
 import com.aynux.afmu.core.PeerStore
@@ -26,6 +28,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.concurrent.atomic.AtomicLong
 
@@ -80,7 +83,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val code: String,
         val remaining: Int = AuthRequests.TIMEOUT_SEC,
         val sending: Boolean = true,
-    )
+        /**
+         * v2 pairing: the 8-character compare code, formatted `XXXX-XXXX`.
+         *
+         * **Computed here, not taken from the reply.** The server echoes its own value back
+         * only so we can catch an implementation mismatch; showing that one would mean an
+         * attacker just has to send the string you were hoping for (draft §4.2.3).
+         */
+        val sas: String = "",
+    ) {
+        val isPairing: Boolean get() = sas.isNotEmpty() || code.isEmpty()
+    }
 
     data class UiState(
         val serverRunning: Boolean = false,
@@ -365,6 +378,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * a multi-homed PC advertises several, and only the one on our subnet will work.
      */
     private suspend fun applyPairing(payload: PairPayload) {
+        if (payload.isV2) {
+            applyPairingV2(payload)
+            return
+        }
         prefs.peerToken = payload.token
         _state.update { it.copy(peerToken = payload.token, scanning = true) }
 
@@ -409,6 +426,116 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             Bridge.log("Peer did not accept our token: ${it.message}")
         }
     }
+
+
+    /**
+     * The v2 path: the code carried a fingerprint instead of a token (draft §4.1).
+     *
+     * Scanning already authenticated the other end out of band, so the TLS connection is
+     * pinned to that fingerprint from the very first packet — a relay cannot get into this
+     * conversation. What is still needed is the *other* user's consent, because their device
+     * has no way to know a QR was involved. That is what the compare code is for.
+     */
+    private suspend fun applyPairingV2(payload: PairPayload) {
+        val fp = payload.fingerprint
+        val nonceA = ByteArray(32).also { SecureRandom().nextBytes(it) }
+        val commit = MessageDigest.getInstance("SHA-256").digest(nonceA)
+
+        val identity = withContext(Dispatchers.IO) { Identity.ensure() }
+        if (identity == null) {
+            _state.update { it.copy(message = str(R.string.msg_pair_no_identity)) }
+            return
+        }
+
+        _state.update { it.copy(scanning = true) }
+
+        // A multi-homed PC advertises several addresses; only the one on our subnet answers.
+        val outcome = withContext(Dispatchers.IO) {
+            payload.hosts.firstNotNullOfOrNull { host ->
+                runCatching {
+                    val started = client.pairCommit(
+                        host, payload.port, fp, commit.toHex(), prefs.deviceName,
+                    )
+                    val session = started.optString("session")
+                    val nonceB = started.optString("nb").fromHex()
+                    if (session.isEmpty() || nonceB.size != 32) return@runCatching null
+
+                    val revealed = client.pairReveal(host, payload.port, fp, session, nonceA.toHex())
+
+                    // Ours, computed here. Theirs is only a cross-check for implementation bugs.
+                    val mine = PairSas.compute(identity.fingerprint, fp.toFingerprintBytes(), nonceA, nonceB)
+                    if (mine == null || mine != revealed.optString("sas")) return@runCatching null
+                    Triple(host, session, mine)
+                }.getOrNull()
+            }
+        }
+        _state.update { it.copy(scanning = false) }
+
+        if (outcome == null) {
+            _state.update { it.copy(message = str(R.string.msg_pair_failed)) }
+            Bridge.log("v2 pairing did not get past the compare-code step")
+            return
+        }
+        val (host, session, sas) = outcome
+
+        val peer = Discovery.Peer(payload.name.ifBlank { host }, payload.os, host, payload.port)
+        _state.update {
+            it.copy(outgoingAuth = OutgoingAuth(peer, code = "", sending = false,
+                                                sas = PairSas.format(sas)))
+        }
+        Bridge.log("Pairing compare code $sas — check it against their screen")
+
+        authJob?.cancel()
+        authJob = viewModelScope.launch { pollPairingV2(peer, fp, session) }
+    }
+
+    /** Waits for the other user to tap Allow, then records the pairing. */
+    private suspend fun pollPairingV2(peer: Discovery.Peer, fp: String, session: String) {
+        for (second in AuthRequests.TIMEOUT_SEC downTo 1) {
+            _state.update { s ->
+                s.outgoingAuth?.let { s.copy(outgoingAuth = it.copy(remaining = second)) } ?: s
+            }
+            delay(1000)
+            val reply = withContext(Dispatchers.IO) {
+                runCatching { client.pairPoll(peer.host, peer.port, fp, session) }.getOrNull()
+            } ?: continue
+
+            when (reply.optString("status")) {
+                "pending" -> continue
+                "granted" -> {
+                    peerStore.upsert(
+                        PeerRecord(
+                            fp = fp,
+                            name = reply.optString("name").ifBlank { peer.name },
+                            os = reply.optString("os").ifBlank { peer.os },
+                            lastHost = peer.host,
+                            lastPort = reply.optInt("port", peer.port),
+                        )
+                    )
+                    _state.update {
+                        it.copy(outgoingAuth = null, message = str(R.string.msg_paired_with) + " " + peer.name)
+                    }
+                    Bridge.log("Paired with ${peer.name} over an encrypted link")
+                    return
+                }
+                else -> {
+                    _state.update { it.copy(outgoingAuth = null, message = str(R.string.msg_pair_declined)) }
+                    return
+                }
+            }
+        }
+        _state.update { it.copy(outgoingAuth = null, message = str(R.string.msg_pair_timeout)) }
+    }
+
+    private fun ByteArray.toHex() = joinToString("") { "%02x".format(it) }
+
+    private fun String.fromHex(): ByteArray =
+        if (length % 2 != 0) ByteArray(0)
+        else runCatching {
+            ByteArray(length / 2) { substring(it * 2, it * 2 + 2).toInt(16).toByte() }
+        }.getOrDefault(ByteArray(0))
+
+    private fun String.toFingerprintBytes(): ByteArray = Base32.decode(this) ?: ByteArray(0)
 
     // ------------------------------------------------------ asking another device to let us in
 

@@ -237,6 +237,75 @@ class PeerClient(private val context: Context) {
         return connection.readJson()
     }
 
+    // ------------------------------------------------------------ v2 配对（草案 §4.2）
+
+    /**
+     * The three-step pairing handshake, driven from this phone.
+     *
+     * The connection is pinned to [expectedFp] — the fingerprint the QR code carried — so
+     * this channel is already authenticated in one direction and a relay cannot sit in it.
+     * The compare code still exists because the *other* end has no way to know a QR was
+     * used, and its user is the one deciding whether to open the door.
+     */
+    fun pairCommit(
+        host: String,
+        port: Int,
+        expectedFp: String,
+        commitHex: String,
+        selfName: String,
+    ): JSONObject = openPinned(
+        host, port, expectedFp, "pair-v2", "POST",
+        mapOf("step" to "commit", "commit" to commitHex, "name" to selfName, "os" to "android"),
+    ).readJson()
+
+    fun pairReveal(
+        host: String,
+        port: Int,
+        expectedFp: String,
+        session: String,
+        naHex: String,
+    ): JSONObject = openPinned(
+        host, port, expectedFp, "pair-v2", "POST",
+        mapOf("step" to "reveal", "session" to session, "na" to naHex),
+    ).readJson()
+
+    fun pairPoll(host: String, port: Int, expectedFp: String, session: String): JSONObject =
+        openPinned(host, port, expectedFp, "pair-v2", "GET", mapOf("session" to session)).readJson()
+
+    /**
+     * Opens a TLS connection pinned to one specific fingerprint, bypassing the pairing table.
+     *
+     * Only pairing may use this: everywhere else the table is the authority, and taking the
+     * fingerprint from the caller instead would make it possible to "pin" to whatever the
+     * network just handed us — which is not pinning at all.
+     */
+    private fun openPinned(
+        host: String,
+        port: Int,
+        expectedFp: String,
+        endpoint: String,
+        method: String,
+        params: Map<String, String>,
+    ): HttpsURLConnection {
+        val factory = pinningFactory(expectedFp)
+            ?: throw IOException("this device has no usable identity")
+        val query = params.entries.joinToString("&") { (k, v) -> "${encode(k)}=${encode(v)}" }
+        val url = URL("https://$host:$port/api/$endpoint" + if (query.isEmpty()) "" else "?$query")
+        return (url.openConnection() as HttpsURLConnection).apply {
+            sslSocketFactory = factory
+            hostnameVerifier = javax.net.ssl.HostnameVerifier { _, _ -> true }
+            requestMethod = method
+            instanceFollowRedirects = false
+            connectTimeout = CONNECT_TIMEOUT
+            readTimeout = READ_TIMEOUT
+            setRequestProperty("Accept", "application/json")
+            if (method == "POST") {
+                // No body — every parameter is in the query, the same as v1's endpoints.
+                setFixedLengthStreamingMode(0)
+            }
+        }
+    }
+
     private fun open(
         peer: Discovery.Peer,
         endpoint: String,

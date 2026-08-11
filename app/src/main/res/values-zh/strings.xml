@@ -59,6 +59,13 @@
     <string name="language">语言</string>
     <string name="language_system">跟随系统</string>
 
+    <string name="msg_pair_no_identity">这台手机没有可用的加密身份，无法进行加密配对。</string>
+    <string name="msg_pair_failed">配对失败 —— 比对码不一致，或者对方没有应答。</string>
+    <string name="msg_pair_declined">对方拒绝了本次配对。</string>
+    <string name="msg_pair_timeout">配对超时，对方没有确认。</string>
+    <string name="pair_compare_code">比对码</string>
+    <string name="pair_compare_hint">这个码是这台手机自己算出来的，不是对方发来的。它和对方屏幕上的一致，就说明中间没有人在转发。</string>
+
     <!-- 加密连接（协议 v2） -->
     <string name="encryption">加密连接</string>
     <string name="encryption_fingerprint">本机指纹 —— 配对时对端会显示同一串，两边一致才说明中间没有人。</string>
