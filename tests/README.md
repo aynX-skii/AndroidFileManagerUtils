@@ -17,6 +17,9 @@ python3 tests/conformance.py --host 192.168.1.42 --port 8765 --token abc123xyz9
 # 只跑某一组
 python3 tests/conformance.py --host … --token … -k download
 python3 tests/conformance.py --host … --token … -k 澄清
+
+# 连要等真实超时的用例一起跑（多花几分钟）
+python3 tests/conformance.py --host … --token … --slow
 ```
 
 退出码 0 = 全过，1 = 有失败，2 = 连不上。
@@ -71,7 +74,8 @@ python3 tests/conformance.py --host 127.0.0.1 --port 8865 --token test2test9
 | §3.4 upload | 原始流 / chunked / multipart、**截断不回 `ok:true` 且不留残片**、**没有文件段回 400**、自动改名、越界 `dir` 落 inbox |
 | §3.5/3.6 | **必填参数缺失回 400**、非空目录需 `recursive=1`、**删 root 回 403** |
 | §4.1/4.2 | `../` 穿越回 404 且不泄露原因、文件名剥路径、**`.` 和 `..` → `unnamed`**、非法字符替换 |
-| §3.8/3.9 | 免鉴权、并发请求回 429、未实现时能被识别（404/401） |
+| §2.2 退避 | 连续猜错 token 触发 429 + `Retry-After`、封禁期内正确 token 也挡、成功后清零 |
+| §3.8/3.9 | 免鉴权、并发请求回 429 且**不带** `Retry-After`、超时后进冷却且**带** `Retry-After`（`--slow`）、未实现时能被识别（404/401） |
 
 ## 已知偏差
 

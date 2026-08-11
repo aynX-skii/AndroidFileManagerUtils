@@ -255,11 +255,21 @@ class HttpServer(
                     code = req.query["code"].orEmpty(),
                 )
                 if (request == null) {
-                    sendJson(
-                        out, "429 Too Many Requests",
-                        jsonError("another request is pending, or this address was refused recently"),
+                    // Only a cooldown gets a Retry-After. "A request is already waiting on
+                    // the user" is a different thing: how long that takes is up to them, so
+                    // there is no honest number to put in the header.
+                    val wait = AuthRequests.retryAfterSec(req.remoteHost)
+                    val body = jsonError(
+                        "another request is pending, or this address was refused recently"
+                    ).toString().toByteArray(Charsets.UTF_8)
+                    sendHeaders(
+                        out, "429 Too Many Requests", "application/json; charset=utf-8",
+                        body.size.toLong(),
+                        if (wait > 0) mapOf("Retry-After" to wait.toString()) else emptyMap(),
                         true,
                     )
+                    out.write(body)
+                    out.flush()
                     return
                 }
                 log("${request.name} (${request.host}) wants to connect — code ${request.code}")

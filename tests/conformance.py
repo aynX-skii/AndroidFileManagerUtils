@@ -184,19 +184,25 @@ class Skip(Exception):
     """这个用例在当前环境下不适用（比如服务端是只读的）。"""
 
 
+SLOW = False  # --slow 打开；标了 slow 的用例要等真实的超时，动辄一两分钟
+
+
 @dataclass
 class Case:
     section: str
     name: str
     fn: Callable[["Ctx"], None]
+    slow: bool = False
 
 
 REGISTRY: list[Case] = []
 
 
-def case(section: str, name: str) -> Callable[[Callable[["Ctx"], None]], Callable[["Ctx"], None]]:
+def case(
+    section: str, name: str, slow: bool = False
+) -> Callable[[Callable[["Ctx"], None]], Callable[["Ctx"], None]]:
     def wrap(fn: Callable[["Ctx"], None]) -> Callable[["Ctx"], None]:
-        REGISTRY.append(Case(section, name, fn))
+        REGISTRY.append(Case(section, name, fn, slow))
         return fn
 
     return wrap
@@ -1036,11 +1042,56 @@ def t_authorize_optional(ctx: Ctx) -> None:
         c.request("POST", "/api/authorize?name=conformance2&os=linux&code=1111", body=b"")
         second = c.read_response()
     expect_eq(second.status, 429, "第二个并发请求应回 429（§3.8）")
+    # 上一个请求刚登记成功，所以这个 429 一定是「有请求在等用户点」而不是冷却。
+    # 等多久取决于用户，报不出准确秒数就不该瞎报一个（§3.8）。
+    expect(
+        second.header("retry-after") is None,
+        f"「已有请求在等用户点」的 429 不该带 Retry-After，实到 {second.header('retry-after')!r}",
+    )
 
     poll = ctx.get(f"/api/authorize?request={q(rid)}")
     expect_eq(poll.status, 200, "轮询状态码")
     expect((poll.json or {}).get("status") in ("pending", "denied", "expired"), "轮询状态")
     print("      提示：对端屏幕上应该弹出了确认码 4821，请点「拒绝」或等它超时")
+
+
+@case("§3.8 authorize", "超时算软拒绝：该地址进冷却，429 带 Retry-After", slow=True)
+def t_authorize_timeout_cooldown(ctx: Ctx) -> None:
+    """
+    规范 §3.8 冷却表第二行。超时算「软拒绝」：不升级计数，但仍要冷却 ——
+    否则「发一个然后挂机等超时」照样能一分钟弹一次。
+
+    要真等一次超时（kAuthTimeoutSec = 60 秒），所以标了 slow。
+    前面的用例多半留下了待决请求或冷却，所以先等到能发得出去为止。
+    """
+    deadline = time.time() + 5 * 60
+    first = None
+    while time.time() < deadline:
+        with ctx.conn() as c:
+            c.request("POST", "/api/authorize?name=conformance-slow&os=linux&code=7777", body=b"")
+            r = c.read_response()
+        if r.status == 200:
+            first = r
+            break
+        if r.status in (404, 401, 403):
+            raise Skip("对端未实现或关掉了 /api/authorize")
+        wait = int(r.header("retry-after") or 5)
+        print(f"      前面的请求还占着（{r.status}），等 {wait}s 再试 …")
+        time.sleep(wait + 1)
+    if first is None:
+        raise Skip("5 分钟内都没能登记上一个请求")
+
+    expires = int((first.json or {}).get("expires") or 60)
+    print(f"      等这个请求超时，约 {expires + 3}s …")
+    time.sleep(expires + 3)
+
+    with ctx.conn() as c:
+        c.request("POST", "/api/authorize?name=conformance-slow2&os=linux&code=8888", body=b"")
+        after = c.read_response()
+    expect_eq(after.status, 429, "超时之后该地址应在冷却中，而不是又能发一个（§3.8）")
+    retry = after.header("retry-after")
+    expect(retry is not None, "冷却导致的 429 缺 Retry-After（§3.8）")
+    expect(1 <= int(retry) <= 30 * 60, f"Retry-After 超出合理范围: {retry}")
 
 
 @case("§3.8 authorize", "未知 request id → 404")
@@ -1159,8 +1210,12 @@ def main() -> int:
     ap.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, help="单个请求超时秒数")
     ap.add_argument("--discover", action="store_true", help="只做设备发现然后退出")
     ap.add_argument("-k", "--filter", help="只跑名字里含该子串的用例")
+    ap.add_argument("--slow", action="store_true", help="连要等真实超时的用例一起跑（会多花几分钟）")
     ap.add_argument("--no-color", action="store_true")
     args = ap.parse_args()
+
+    global SLOW
+    SLOW = args.slow
 
     if args.no_color or not sys.stdout.isatty():
         globals().update(GREEN="", RED="", YELLOW="", DIM="", RESET="")
@@ -1218,6 +1273,8 @@ def main() -> int:
                 section = c.section
                 print(f"{DIM}{section}{RESET}")
             try:
+                if c.slow and not SLOW:
+                    raise Skip("要等真实超时，用 --slow 打开")
                 c.fn(ctx)
             except Skip as e:
                 skipped += 1
