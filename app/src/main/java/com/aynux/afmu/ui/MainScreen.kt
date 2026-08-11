@@ -760,7 +760,7 @@ private fun BrowserTransferBar(
 }
 
 /**
- * This device's identity and the encryption switch (PROTOCOL-v2-DRAFT.md §3 / §8.1).
+ * This device's identity and the encryption switch (PROTOCOL.md v2 §3 / §8.1).
  *
  * The fingerprint is shown in full and never truncated: the user compares it against the
  * other device's screen, and a shortened one hides exactly the mismatch it exists to reveal.
@@ -848,7 +848,7 @@ private fun EncryptionCard(
 }
 
 /**
- * The v2 pairing table (PROTOCOL-v2-DRAFT.md §4.3).
+ * The v2 pairing table (PROTOCOL.md v2 §4.3).
  *
  * A row here *is* an open door: only these fingerprints get through the handshake. Which is
  * why the delete action shipped before anything could write to the table — a door that can be

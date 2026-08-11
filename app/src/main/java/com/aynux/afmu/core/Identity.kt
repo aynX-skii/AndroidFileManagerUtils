@@ -18,7 +18,7 @@ import javax.security.auth.x500.X500Principal
 
 /**
  * This device's long-term identity: an EC P-256 key pair and a self-signed certificate
- * (PROTOCOL-v2-DRAFT.md §3).
+ * (PROTOCOL.md v2 §3).
  *
  * v2's central change is that **a device's identity is a long-term key pair**, with the
  * token demoted. This class only mints and keeps that key pair and computes the fingerprint
@@ -107,7 +107,7 @@ object Identity {
      *
      * `PublicKey.getEncoded()` returns exactly SubjectPublicKeyInfo DER ("X.509" format in
      * JCA's naming), which is the same bytes OpenSSL's `i2d_X509_PUBKEY` produces on the
-     * Linux side. Verify it — see the cross-check in PROTOCOL-v2-DRAFT.md §12 step 1.
+     * Linux side. Verify it — see the cross-check in PROTOCOL.md v2 §12 step 1.
      */
     fun spkiFingerprint(cert: X509Certificate): ByteArray =
         MessageDigest.getInstance("SHA-256").digest(cert.publicKey.encoded)

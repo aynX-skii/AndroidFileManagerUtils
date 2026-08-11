@@ -114,7 +114,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
          *  is not being trusted. */
         val peers: List<Discovery.Peer> = emptyList(),
         /**
-         * The v2 pairing table (PROTOCOL-v2-DRAFT.md §4.3). Empty until the mTLS handshake
+         * The v2 pairing table (PROTOCOL.md v2 §4.3). Empty until the mTLS handshake
          * lands; the list and its delete action exist first on purpose, so nothing can be
          * written here that the user cannot then remove.
          */

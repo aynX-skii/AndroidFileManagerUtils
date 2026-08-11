@@ -14,7 +14,7 @@ token，就点「请求授权」让对方在自己屏幕上确认，广播发现
 |------|------|
 | Android App（服务端 + 客户端 + 浏览器界面） | ✅ 已完成 |
 | 传输协议规范 | ✅ [docs/PROTOCOL.md](docs/PROTOCOL.md) |
-| 加密协议 v2（零信任网络） | 🚧 实施中：[docs/PROTOCOL-v2-DRAFT.md](docs/PROTOCOL-v2-DRAFT.md)。身份、配对表、双向 TLS、扫码与 SAS 配对都已写完。Linux ↔ Linux 全程实测跑通；**Android 侧待真机验证** |
+| 加密协议 v2（零信任网络） | ✅ 已落地：[docs/PROTOCOL.md](docs/PROTOCOL.md) 第二部分。身份、配对表、双向 TLS、扫码与 SAS 配对、滚动 rid、访客模式全部完成。Linux ↔ Linux 全程实测跑通；**Android 侧的握手待真机验证** |
 | Linux 桌面客户端（Qt 6，服务端 + 客户端） | ✅ 已完成，单独一个仓库：[aynX-skii/afmu-linux](https://github.com/aynX-skii/afmu-linux) |
 | Linux 命令行客户端 | ❌ 不做了，理由见 [docs/LINUX-CLIENT.md](docs/LINUX-CLIENT.md) 开头 |
 

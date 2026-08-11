@@ -18,7 +18,7 @@ import javax.net.ssl.HttpsURLConnection
 class PeerClient(private val context: Context) {
 
     /**
-     * The pairing table decides whether a peer is reached over TLS (PROTOCOL-v2-DRAFT.md §5).
+     * The pairing table decides whether a peer is reached over TLS (PROTOCOL.md v2 §5).
      *
      * Built lazily and kept, because every request needs it and reading SharedPreferences on
      * each one would be silly.

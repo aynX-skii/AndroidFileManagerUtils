@@ -12,7 +12,7 @@ import javax.net.ssl.X509ExtendedKeyManager
 import javax.net.ssl.X509ExtendedTrustManager
 
 /**
- * The TLS layer for v2 (PROTOCOL-v2-DRAFT.md §5).
+ * The TLS layer for v2 (PROTOCOL.md v2 §5).
  *
  * Two decisions worth reading before changing anything here:
  *

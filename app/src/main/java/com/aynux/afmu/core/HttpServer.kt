@@ -37,7 +37,7 @@ class HttpServer(
     @Volatile private var pool: ExecutorService? = null
 
     /**
-     * v2 (PROTOCOL-v2-DRAFT.md §5). Null means this device can only speak v1 — either there
+     * v2 (PROTOCOL.md v2 §5). Null means this device can only speak v1 — either there
      * is no usable identity, or no pairing table to check fingerprints against. Both are
      * needed: an identity with nothing to compare against is not pinning, it is decoration.
      */
@@ -160,7 +160,7 @@ class HttpServer(
          * Set once the connection completed a v2 handshake against a paired fingerprint.
          *
          * When true the token check is skipped: **a completed handshake against a pinned
-         * key is the authentication** (PROTOCOL-v2-DRAFT.md §5.2). Asking for a token on
+         * key is the authentication** (PROTOCOL.md v2 §5.2). Asking for a token on
          * top would carry v1's weakness — one long-lived shared secret — into v2.
          */
         val pairedPeer: String = "",
@@ -174,7 +174,7 @@ class HttpServer(
     /**
      * Serves one connection, wrapping it in TLS when this device is in encrypted-only mode.
      *
-     * **This end does not do the first-byte sniffing of PROTOCOL-v2-DRAFT.md §8.1 rule 4, and
+     * **This end does not do the first-byte sniffing of PROTOCOL.md v2 §8.1 rule 4, and
      * it is not an oversight.** Sniffing means peeking the first byte and then handing it
      * back to the TLS engine, which on the JVM is
      * `SSLSocketFactory.createSocket(Socket, InputStream consumed, boolean)` — **an overload

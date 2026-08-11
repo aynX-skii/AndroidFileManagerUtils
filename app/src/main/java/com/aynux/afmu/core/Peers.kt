@@ -4,7 +4,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * One pairing (PROTOCOL-v2-DRAFT.md §4.3).
+ * One pairing (PROTOCOL.md v2 §4.3).
  *
  * **[fp] is the identity; nothing else here is.** The peer renames itself, DHCP moves it to
  * another address — only a different fingerprint means a different device. Every lookup,

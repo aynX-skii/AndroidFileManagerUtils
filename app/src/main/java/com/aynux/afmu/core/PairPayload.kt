@@ -24,7 +24,7 @@ data class PairPayload(
      *
      * A v1 code carries a plaintext token, so screenshotting or forwarding it hands over
      * access. A fingerprint is public information by construction: leaking it costs nothing.
-     * That is one real problem v2 fixes on the way past (PROTOCOL-v2-DRAFT.md §4.1).
+     * That is one real problem v2 fixes on the way past (PROTOCOL.md v2 §4.1).
      */
     val fingerprint: String,
     val name: String,

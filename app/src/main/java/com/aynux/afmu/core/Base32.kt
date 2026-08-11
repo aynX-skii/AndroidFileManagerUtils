@@ -3,7 +3,7 @@ package com.aynux.afmu.core
 import java.io.ByteArrayOutputStream
 
 /**
- * The base32 alphabet fingerprints are shown and exchanged in (PROTOCOL-v2-DRAFT.md §3.1).
+ * The base32 alphabet fingerprints are shown and exchanged in (PROTOCOL.md v2 §3.1).
  *
  * Kept free of any Android dependency on purpose: this has to produce **byte-identical**
  * output to `afmu::Identity::toBase32` on the Linux side — the strings travel between the

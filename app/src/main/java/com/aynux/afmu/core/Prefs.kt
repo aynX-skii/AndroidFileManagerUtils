@@ -62,7 +62,7 @@ class Prefs(context: Context) {
         set(value) = sp.edit().putString(KEY_INBOX, value).apply()
 
     /**
-     * Accept unencrypted v1 connections (PROTOCOL-v2-DRAFT.md §8.1).
+     * Accept unencrypted v1 connections (PROTOCOL.md v2 §8.1).
      *
      * With this off, a connection whose first byte is not `0x16` is dropped without any HTTP
      * response at all — this port then effectively only listens for TLS.
@@ -76,7 +76,7 @@ class Prefs(context: Context) {
         set(value) = sp.edit().putBoolean(KEY_ALLOW_PLAINTEXT, value).apply()
 
     /**
-     * Zero-trust mode (PROTOCOL-v2-DRAFT.md §9): only paired devices, only encrypted.
+     * Zero-trust mode (PROTOCOL.md v2 §9): only paired devices, only encrypted.
      *
      * Turning it on forces both [allowLegacyPlaintext] and [guestMode] off. The UI keeps
      * showing those switches, greyed — hiding them would leave the user wondering why the

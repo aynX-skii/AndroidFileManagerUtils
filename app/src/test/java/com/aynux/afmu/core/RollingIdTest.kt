@@ -8,7 +8,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The rolling discovery id (PROTOCOL-v2-DRAFT.md §6.1).
+ * The rolling discovery id (PROTOCOL.md v2 §6.1).
  *
  * The vectors below come from the Linux side's actual output (`afmu_peerstore_test`), not from
  * this file's own [RollingId.compute] — a self-consistent implementation that disagrees with

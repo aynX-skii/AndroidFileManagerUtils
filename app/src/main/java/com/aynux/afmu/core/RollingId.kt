@@ -3,7 +3,7 @@ package com.aynux.afmu.core
 import java.security.MessageDigest
 
 /**
- * The rolling identifier in discovery replies (PROTOCOL-v2-DRAFT.md §6.1).
+ * The rolling identifier in discovery replies (PROTOCOL.md v2 §6.1).
  *
  * ```
  * rid = hex( SHA-256( "AFMU-RID-v2" || fp || decimalASCII(floor(unix_time / 300)) )[0:4] )
@@ -14,7 +14,7 @@ import java.security.MessageDigest
  * sees a random-looking hex string, while **a device that already holds our fingerprint
  * computes the same value** and so still recognises "that's my phone".
  *
- * It also answers §13 question 3: a PC that changed IP is still recognisable, no re-pairing.
+ * It also answers v2 §13 question 3: a PC that changed IP is still recognisable, no re-pairing.
  *
  * Do not mistake this for anonymity. §6.1 has the honest table: an observer watching several
  * consecutive windows can still correlate a device, and **anyone who has ever seen the `fp`

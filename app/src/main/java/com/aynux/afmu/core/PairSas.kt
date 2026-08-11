@@ -3,7 +3,7 @@ package com.aynux.afmu.core
 import java.security.MessageDigest
 
 /**
- * The short authentication string (PROTOCOL-v2-DRAFT.md §4.2.2) — what the user compares when
+ * The short authentication string (PROTOCOL.md v2 §4.2.2) — what the user compares when
  * there is no QR code to scan.
  *
  * ```

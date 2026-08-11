@@ -93,7 +93,7 @@ object ProtocolConstants {
     const val PAIRING_MODE_SEC = 60
 
     // ---- 设备身份（v2） ----------------------------------------------------
-    // PROTOCOL-v2-DRAFT.md §3。v1 还用不到，但指纹的定义两端必须一模一样 —— 差一层封装就永远对不上，而症状是「证书明明对却一直不匹配」，极难查。
+    // PROTOCOL.md v2 §3。v1 还用不到，但指纹的定义两端必须一模一样 —— 差一层封装就永远对不上，而症状是「证书明明对却一直不匹配」，极难查。
 
     /** 不用 RSA：生成快、握手包小、Android KeyStore 原生支持 */
     const val IDENTITY_CURVE = "P-256"
