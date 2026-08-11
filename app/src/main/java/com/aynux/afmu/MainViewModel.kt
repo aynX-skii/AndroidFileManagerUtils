@@ -10,6 +10,8 @@ import com.aynux.afmu.core.Discovery
 import com.aynux.afmu.core.LocaleHelper
 import com.aynux.afmu.core.PairPayload
 import com.aynux.afmu.core.PeerClient
+import com.aynux.afmu.core.PeerRecord
+import com.aynux.afmu.core.PeerStore
 import com.aynux.afmu.core.Prefs
 import com.aynux.afmu.core.Storage
 import com.aynux.afmu.service.TransferService
@@ -94,7 +96,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         /** Seconds left of pairing mode; 0 when off (PROTOCOL.md §1.5). */
         val pairingSecondsLeft: Int = 0,
         val fullStorageAccess: Boolean = false,
+        /** Devices seen on the network right now. Unrelated to [pairedPeers] — being visible
+         *  is not being trusted. */
         val peers: List<Discovery.Peer> = emptyList(),
+        /**
+         * The v2 pairing table (PROTOCOL-v2-DRAFT.md §4.3). Empty until the mTLS handshake
+         * lands; the list and its delete action exist first on purpose, so nothing can be
+         * written here that the user cannot then remove.
+         */
+        val pairedPeers: List<PeerRecord> = emptyList(),
+        /** Rows the last load discarded as unusable — said out loud rather than swallowed. */
+        val pairedDropped: Int = 0,
         val selectedPeer: Discovery.Peer? = null,
         val peerToken: String = "",
         val scanning: Boolean = false,
@@ -115,6 +127,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         LocaleHelper.wrap(getApplication()).getString(resId)
 
     private val prefs = Prefs(app)
+    private val peerStore = PeerStore(app)
     private val client = PeerClient(app)
     private val ids = AtomicLong(0)
 
@@ -154,6 +167,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             AuthRequests.pending.collect { request ->
                 _state.update { it.copy(pendingAuth = request) }
             }
+        }
+        viewModelScope.launch {
+            peerStore.peers.collect { paired ->
+                _state.update {
+                    it.copy(pairedPeers = paired, pairedDropped = peerStore.droppedOnLoad)
+                }
+            }
+        }
+    }
+
+    /**
+     * Forgets a pairing. There is no confirmation here — the UI asks first, because this
+     * closes a door the user may have to walk through again with the other device in hand.
+     */
+    fun unpair(fp: String) {
+        if (peerStore.remove(fp)) {
+            _state.update { it.copy(message = str(R.string.unpaired)) }
         }
     }
 

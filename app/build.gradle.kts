@@ -52,9 +52,12 @@ dependencies {
     implementation("androidx.camera:camera-view:1.5.1")
     implementation("com.google.zxing:core:3.5.3")
 
-    // 纯 JVM 单元测试。只覆盖不依赖 Android 的那部分 —— 目前是 base32 和
-    // 生成的协议常量，而它们恰好正是「两端必须逐字节一致」的东西。
+    // 纯 JVM 单元测试。只覆盖不依赖 Android 的那部分 —— base32、协议常量、配对表的
+    // 编解码，而它们恰好正是「两端必须逐字节一致」或者「错了就等于开着一道门」的东西。
     testImplementation("junit:junit:4.13.2")
+    // android.jar 里的 org.json 是空壳，一调就抛 "not mocked"。把真实现放进测试
+    // classpath 才能测配对表的编解码；它和平台上那份是同一套 API，行为一致。
+    testImplementation("org.json:json:20250107")
 
     implementation(platform("androidx.compose:compose-bom:2026.02.01"))
     implementation("androidx.compose.ui:ui")

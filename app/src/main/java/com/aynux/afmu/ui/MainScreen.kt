@@ -76,6 +76,8 @@ import androidx.compose.ui.window.DialogProperties
 import com.aynux.afmu.MainViewModel
 import com.aynux.afmu.R
 import com.aynux.afmu.core.AuthRequests
+import com.aynux.afmu.core.Base32
+import com.aynux.afmu.core.PeerRecord
 import com.aynux.afmu.core.Prefs
 import com.aynux.afmu.core.Discovery
 import com.aynux.afmu.core.HttpServer
@@ -126,6 +128,7 @@ fun MainScreen(
             ServerCard(state, viewModel) { copyToClipboard(context, it) }
             if (!state.fullStorageAccess) StorageAccessCard(onRequestFullStorage)
             SendCard(state, viewModel, onPickFiles, onScanCode)
+            PairedDevicesCard(state, viewModel) { copyToClipboard(context, it) }
             SettingsCard(state, viewModel)
             LogCard(state, viewModel)
             Spacer(Modifier.height(24.dp))
@@ -750,6 +753,149 @@ private fun BrowserTransferBar(
                     Text(stringResource(R.string.clear_finished))
                 }
             }
+        }
+    }
+}
+
+/**
+ * The v2 pairing table (PROTOCOL-v2-DRAFT.md §4.3).
+ *
+ * Nothing writes to it yet — that waits on the mTLS handshake in §12 steps 3–6. The list and
+ * its delete action ship first deliberately: in v2 a row here *is* an open door, and a door
+ * that can be opened before it can be closed is the wrong order to build things in.
+ */
+@Composable
+private fun PairedDevicesCard(
+    state: MainViewModel.UiState,
+    viewModel: MainViewModel,
+    onCopy: (String) -> Unit,
+) {
+    var pendingUnpair by remember { mutableStateOf<PeerRecord?>(null) }
+
+    SectionCard(stringResource(R.string.paired_devices)) {
+        if (state.pairedPeers.isEmpty()) {
+            Text(
+                stringResource(R.string.paired_none),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            state.pairedPeers.forEach { peer ->
+                PairedDeviceRow(
+                    peer = peer,
+                    onCopy = onCopy,
+                    onUnpair = { pendingUnpair = peer },
+                )
+            }
+            Text(
+                stringResource(R.string.paired_no_expiry),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
+
+        // A list quietly shorter than what is stored is how "wasn't that phone paired?" starts.
+        if (state.pairedDropped > 0) {
+            Text(
+                stringResource(R.string.paired_dropped, state.pairedDropped),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
+    }
+
+    pendingUnpair?.let { peer ->
+        AlertDialog(
+            onDismissRequest = { pendingUnpair = null },
+            title = { Text(stringResource(R.string.unpair)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(stringResource(R.string.unpair_confirm))
+                    if (peer.name.isNotEmpty()) Text(peer.name)
+                    Text(
+                        Base32.group(peer.fp),
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.unpair(peer.fp)
+                    pendingUnpair = null
+                }) { Text(stringResource(R.string.unpair)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingUnpair = null }) {
+                    Text(stringResource(R.string.cancel))
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun PairedDeviceRow(
+    peer: PeerRecord,
+    onCopy: (String) -> Unit,
+    onUnpair: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Column(Modifier.weight(1f)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    peer.name.ifEmpty { stringResource(R.string.paired_unnamed) },
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+                // Talks v2 only; never falls back to plaintext (draft §8.1).
+                if (peer.pinned) {
+                    Text(
+                        stringResource(R.string.paired_encrypted_only),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+            // The fingerprint *is* this device's identity, so it is shown in full: the user
+            // compares it against the other screen, and a truncated one hides the mismatch.
+            Text(
+                Base32.group(peer.fp),
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            val detail = listOfNotNull(
+                peer.pairedAt.takeIf { it > 0 }
+                    ?.let { stringResource(R.string.paired_since, formatMtime(it)) },
+                peer.lastHost.takeIf { it.isNotEmpty() }
+                    ?.let { stringResource(R.string.paired_last_seen, "$it:${peer.lastPort}") },
+            ).joinToString("  ·  ")
+            if (detail.isNotEmpty()) {
+                Text(
+                    detail,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        IconButton(onClick = { onCopy(Base32.group(peer.fp)) }) {
+            Icon(Icons.Default.ContentCopy, contentDescription = stringResource(R.string.copy_fingerprint))
+        }
+        IconButton(onClick = onUnpair) {
+            Icon(
+                Icons.Default.Delete,
+                contentDescription = stringResource(R.string.unpair),
+                tint = MaterialTheme.colorScheme.error,
+            )
         }
     }
 }

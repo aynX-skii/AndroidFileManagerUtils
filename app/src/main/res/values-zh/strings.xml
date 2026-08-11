@@ -59,6 +59,20 @@
     <string name="language">语言</string>
     <string name="language_system">跟随系统</string>
 
+    <!-- 已配对设备（协议 v2 的配对表） -->
+    <string name="paired_devices">已配对设备</string>
+    <string name="paired_none">还没有配对过的设备。加密连接（协议 v2）启用后，配对成功的设备会出现在这里。</string>
+    <string name="paired_no_expiry">配对关系不会自动过期 —— 半年没用的设备下次还能直接连。要清理只能在这里手动解除。</string>
+    <string name="paired_dropped">存着的记录里有 %1$d 条不可用，已忽略。</string>
+    <string name="paired_unnamed">未命名设备</string>
+    <string name="paired_encrypted_only">仅加密</string>
+    <string name="paired_since">配对于 %1$s</string>
+    <string name="paired_last_seen">上次 %1$s</string>
+    <string name="unpair">解除配对</string>
+    <string name="unpair_confirm">解除后这台设备将无法再连接，要用需重新配对。</string>
+    <string name="unpaired">已解除配对</string>
+    <string name="copy_fingerprint">复制指纹</string>
+
     <!-- 传输 / 日志 -->
     <string name="activity">活动</string>
     <string name="clear">清空</string>

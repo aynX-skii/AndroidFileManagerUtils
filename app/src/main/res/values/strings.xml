@@ -62,6 +62,20 @@
     <string name="language_en">English</string>
     <string name="language_zh">中文</string>
 
+    <!-- 已配对设备（协议 v2 的配对表） -->
+    <string name="paired_devices">Paired devices</string>
+    <string name="paired_none">No paired devices yet. Once encrypted connections (protocol v2) are on, devices you pair with appear here.</string>
+    <string name="paired_no_expiry">Pairings never expire on their own — a device you have not used in months still connects. Clearing one is manual, here.</string>
+    <string name="paired_dropped">%1$d stored entries were unusable and have been ignored.</string>
+    <string name="paired_unnamed">Unnamed device</string>
+    <string name="paired_encrypted_only">Encrypted only</string>
+    <string name="paired_since">Paired %1$s</string>
+    <string name="paired_last_seen">Last seen %1$s</string>
+    <string name="unpair">Unpair</string>
+    <string name="unpair_confirm">This device will no longer be able to connect, and using it again means pairing from scratch.</string>
+    <string name="unpaired">Pairing removed</string>
+    <string name="copy_fingerprint">Copy fingerprint</string>
+
     <!-- 传输 / 日志 -->
     <string name="activity">Activity</string>
     <string name="clear">Clear</string>

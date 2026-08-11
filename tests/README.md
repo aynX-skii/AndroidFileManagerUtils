@@ -5,6 +5,13 @@
 
 只用 Python 3 标准库，不装任何东西。
 
+> 另外两处测试不在这里，但同属「两端不许漂移」这件事：
+>
+> - `./gradlew :app:testDebugUnitTest` —— 纯 JVM 单元测试，覆盖不依赖 Android 的部分：
+>   base32（向量取自 C++ 实现的真实输出）、协议常量、配对表编解码。
+> - `afmu-linux` 的 `cmake -DAFMU_TESTS=ON` + `./build/afmu_peerstore_test` ——
+>   配对表的 C++ 一侧，断言和 Android 的 `PeerCodecTest` 刻意一一对应。
+
 ## 跑
 
 ```bash
