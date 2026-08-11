@@ -5,6 +5,10 @@
     <string name="receive_on_this_phone">在本机接收</string>
     <string name="server_running">服务运行中，端口 %1$d</string>
     <string name="server_stopped">服务已停止</string>
+    <!-- 服务开着就一直显示。v1 是明文 HTTP，只写在文档里的话，
+         真正在决定「要不要开」的那个人根本看不到。 -->
+    <string name="unencrypted_badge">未加密</string>
+    <string name="unencrypted_detail">流量是明文 HTTP。同一网络里的任何人都能看到文件名和文件内容。请只在信任的网络里使用。</string>
     <string name="network_label">网络：%1$s</string>
     <string name="no_lan_detected">  ·  未检测到局域网</string>
     <string name="refresh_network">刷新网络</string>

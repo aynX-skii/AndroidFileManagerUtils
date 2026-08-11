@@ -3,6 +3,7 @@ package com.aynux.afmu.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -27,6 +29,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
@@ -247,6 +250,11 @@ private fun ServerCard(
         }
 
         if (state.serverRunning) {
+            // Stays on screen the whole time the server is up (PROTOCOL.md §2.2). Saying
+            // "plain HTTP" only in the docs means the person deciding whether to leave this
+            // running never reads it.
+            UnencryptedNotice()
+
             if (state.urls.isEmpty()) {
                 Text(
                     stringResource(R.string.no_usable_address) +
@@ -271,6 +279,47 @@ private fun ServerCard(
                 stringResource(R.string.incoming_files_land_in, state.inbox),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
+ * The permanent "this is not encrypted" banner (PROTOCOL.md §2.2).
+ *
+ * Deliberately not dismissible and not a one-time dialog: the fact does not go away while
+ * the server runs, and a warning the user tapped through three weeks ago is not informed
+ * consent today.
+ */
+@Composable
+private fun UnencryptedNotice() {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .background(
+                MaterialTheme.colorScheme.errorContainer,
+                MaterialTheme.shapes.small,
+            )
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Icon(
+            Icons.Filled.LockOpen,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onErrorContainer,
+            modifier = Modifier.size(18.dp),
+        )
+        Spacer(Modifier.width(8.dp))
+        Column {
+            Text(
+                stringResource(R.string.unencrypted_badge),
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+            )
+            Text(
+                stringResource(R.string.unencrypted_detail),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onErrorContainer,
             )
         }
     }

@@ -6,6 +6,10 @@
     <string name="receive_on_this_phone">Receive on this phone</string>
     <string name="server_running">Server running on port %1$d</string>
     <string name="server_stopped">Server stopped</string>
+    <!-- Kept on screen the whole time the server is up. v1 is plain HTTP; saying so only in
+         the docs means the person deciding whether to switch this on never sees it. -->
+    <string name="unencrypted_badge">Unencrypted</string>
+    <string name="unencrypted_detail">Traffic is plain HTTP. Anyone on this network can read file names and contents. Use it on networks you trust.</string>
     <string name="network_label">Network: %1$s</string>
     <string name="no_lan_detected">  ·  no LAN detected</string>
     <string name="refresh_network">Refresh network</string>
