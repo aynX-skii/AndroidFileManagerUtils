@@ -1,8 +1,9 @@
 # FileBridge 传输协议 v2 草案 —— 零信任网络下的加密与身份
 
-状态：**草案，实施中**。§12 清单的第 1–3 步已落地：设备身份、配对表，
-以及 **Linux 服务端的 mTLS**——已实测握上手、钉扎生效、明文分流可关。
-客户端一侧（第 4–6 步）还没做，所以日常仍然走 v1（[PROTOCOL.md](PROTOCOL.md)）。
+状态：**草案，实施中**。§12 清单的第 1–4 步已落地：设备身份、配对表、
+Linux 的服务端与客户端。**Linux ↔ Linux 已经能全程走 v2**——双向钉扎实测通过，
+含 3 MB 流式下载和 Range 续传。Android 一侧（第 5–6 步）还没做，
+所以和手机之间仍然走 v1（[PROTOCOL.md](PROTOCOL.md)）。
 
 这份文档只回答一个问题：**怎么让 AFMU 在不可信网络上也能用。**
 v1 自己写着"不要在不可信网络上开启服务"，v2 的目标就是删掉那句话。
@@ -429,6 +430,53 @@ UI 上的代价：用户要比对 8 个字符而不是 4 个数字。只在没�
 
 指纹与 `openssl` 独立算出的值再次交叉验证一致（这次是对端方向）。
 
+#### 实现状态（Linux 客户端，第 4 步）
+
+`QNetworkAccessManager` 走 https，钉扎挂在 **`QNetworkAccessManager::encrypted`** 上——
+这个信号的时机正是要害：**握手刚完成、还没有发出任何用户数据**。
+在这里 `abort()`，token、路径、文件内容一个字节都不会漏给冒充者。
+（实测印证：指纹不匹配那一次，服务端连一条请求记录都没有。）
+
+走不走 TLS 在 `setPeer()` 时就定死：地址在配对表里有记录就必须走 v2，
+之后不存在"握手失败就退回明文"的路径（§8.1 第 1 条）。
+
+Linux ↔ Linux 逐条实测：
+
+| 场景 | 结果 |
+|---|---|
+| 双方互相配对 | 全程 TLS 1.3，双向钉扎，`/api/info` 不带 token 直接连上 |
+| 客户端钉的指纹不对 | 连接中止，界面说"这不是你配对的那台设备"；**服务端没收到任何请求** |
+| 已配对对端只提供明文 | 只发出一个 ClientHello 就失败，**没有第二次明文重试** |
+| 对端没配对过 | 照旧走 v1 明文，服务端零条加密连接 |
+| 3 MB 下载 + Range 续传 | 字节完全一致（`pumpFile` 的写入节流在 `QSslSocket` 上照常工作）|
+
+##### 两处栽在 Qt 上的坑，都是实测出来的
+
+**1. ALPN 不能当安全边界，因为 QNAM 根本不让你设。**
+
+`QNetworkAccessManager` 会**覆盖**请求里设的 ALPN，自己提 `{h2, http/1.1}`。
+服务端只接受 `afmu/2` 的话，第一个连不上的就是我们自己的客户端（`BAD_EXTENSION`）。
+所以服务端的 ALPN 列表是 `{afmu/2, http/1.1}`，由服务端在 ALPN 阶段选中
+`http/1.1`，顺带把 QNAM 默认开启的 HTTP/2 挡掉——比在客户端逐个请求关
+`Http2AllowedAttribute` 可靠，后者实测会让握手直接卡死。
+
+于是 §5 那句"让不匹配的客户端早点失败"**在 Qt 这条路上做不到**：随便一个
+HTTPS 客户端都能握上手。挡住它的从来不是 ALPN 而是钉扎——没有已配对的
+客户端证书，握完也进不去。ALPN 在这里只是个标记。
+
+**2. QNAM 会因为 `sslErrors` 中止连接，`QueryPeer` 拦不住它。**
+
+服务端那边 `QueryPeer` 确实让校验错误变成非致命的，但 QNAM 多一层自己的判断：
+没有明确 `ignoreSslErrors()` 就中止（实测 `SslHandshakeFailedError`）。
+
+所以客户端**必须**在 `sslErrors` 里放过自签证书那几种错误。
+这看起来很像 §5.1 说的错误写法，区别要说清楚：
+
+- ❌ 错的是**在 `sslErrors` 里做身份判断**——那段代码可能一次都不执行。
+- ✅ 这里 `sslErrors` 里一个字节的身份判断都没有，只是告诉 Qt"CA 这条路我们本来就不走"；
+  而且**只放过预期内的那几种**，多出任何一种没见过的错误就照旧中止。
+  真正的比对在 `encrypted` 里，不匹配就 `abort()`。
+
 两处和草案原文的偏差，都已按实测修正：
 
 1. **未配对设备现在是直接断开**，而不是"放进来但只许访问 `/api/pair-v2`"。
@@ -643,7 +691,8 @@ v2 是为咖啡厅 Wi-Fi 那种真正的零信任场景准备的。
 2. **配对表**：`peers.json` / SharedPreferences 结构，增删查改 + 界面。**（已完成，见 §4.3「实现状态」）**
 3. **Linux 服务端**：首字节分流 + `QSslSocket` 手工升级，`QueryPeer` + 手工指纹比对。
    **（已完成，见 §5.2「实现状态」——没用 `QSslServer`，原因在那里）**
-4. **Linux 客户端**：`QNetworkAccessManager` 走 https，`sslErrors` 里做指纹钉扎。
+4. **Linux 客户端**：`QNetworkAccessManager` 走 https，钉扎挂在 `encrypted` 上
+   （**不是** `sslErrors`，原因见 §5.2）。**（已完成）**
 5. **Android 服务端**：`SSLServerSocket` + AndroidKeyStore 的 `X509KeyManager` + 自定义 `X509TrustManager`。
 6. **Android 客户端**：`HttpsURLConnection` 挂同一套 TrustManager/KeyManager。
 7. **二维码 v2**：`fp` 参数，`token` 移除，`v=2`。
