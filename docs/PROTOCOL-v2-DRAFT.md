@@ -77,11 +77,29 @@ fingerprint = SHA-256( DER(SubjectPublicKeyInfo) )
 **钉 SPKI 而不是钉整张证书**：这样将来证书到期要重签、或者要改 subject，
 公钥不变则所有已配对关系继续有效。钉整张证书的话，每次重签都要全部重新配对。
 
-展示给用户时用 base32（去掉 `0/1/I/O`），5 个一组：
+「SPKI」指的是**算法标识 + 公钥位串那一整层封装**，不是裸的 EC 点。
+判据：它必须等于下面这条命令的输出——
+
+```bash
+openssl x509 -in identity.pem -pubkey -noout \
+  | openssl pkey -pubin -outform DER | sha256sum
+```
+
+> **最容易踩的坑**：`openssl x509 -noout -fingerprint -sha256` 算的是**整张证书**的哈希，
+> 和这里要的完全不是一个值。两端只要有一端理解错，症状就是
+> 「证书明明对却一直不匹配」，而且要等握手层调通之后才会暴露。
+> 所以 §12 第 1 步要求做完身份层立刻交叉验证。
+
+展示给用户时用 base32（字母表去掉 `I` 和 `O`——`0` 和 `1` 本来就不在 base32 里），
+5 个一组。**256 bit 编成 52 个字符**（51 组之后还剩 1 bit，左对齐补成第 52 组）：
 
 ```
-K7M2Q  9XFHT  B4NRW  2PLDS  8VCGY  M3JKA  7QZE
+U9UZA VEAGM S6NZ4 GCC9E DTGS2 22BGS HMG9H GDG8D XGXGL YLP7S GA
 ```
+
+**不要截断。** 二维码里的 `fp` 和配对表里存的都是完整的 52 个字符：
+二维码容量在这里根本不是约束，为省十几个字符去削弱钉扎强度没有任何收益。
+用户比对时嫌长的话，那是 §4.2 的 SAS 要解决的问题，不该靠截断指纹来凑合。
 
 ### 3.2 密钥怎么生成
 
@@ -92,6 +110,31 @@ K7M2Q  9XFHT  B4NRW  2PLDS  8VCGY  M3JKA  7QZE
 
 参数统一：**EC P-256**（不是 RSA——生成快、握手包小、Android KeyStore 原生支持），
 有效期 20 年（钉扎之后有效期本来就没有意义，只是别让 TLS 栈以过期为由拒绝）。
+
+两端共通的两条规矩：
+
+- **生成是一次性的。** 换了密钥就等于换了设备，所有已配对关系全部作废。
+  所以身份**存在但读不出来**时必须**报错**，绝不能当成"重新生成一个"的理由——
+  静默换钥匙的表现是"所有已配对设备突然都连不上了"，而且没人查得出原因。
+- **subject 只是占位**（`CN=AFMU device`）。钉的是公钥，名字放什么都不影响安全性；
+  放设备名反而会把它印进配对表和日志。
+
+#### 实现状态
+
+第 1 步两端都已落地并交叉验证过（§12）：
+
+| | 现状 |
+|---|---|
+| Linux | `src/Identity.{h,cpp}`，OpenSSL 3.x EVP API；`afmu --fingerprint` 打印指纹并给出复核命令 |
+| Android | `core/Identity.kt`，AndroidKeyStore，优先 StrongBox → TEE → 软件密钥，实际归属由 `KeyInfo` 查询而非记生成时的选择 |
+| base32 | 抽成不依赖 Android 的 `core/Base32.kt`，JVM 单元测试用**取自 C++ 实现的真实向量**校验两端一致 |
+
+Linux 侧实测确认：指纹与 `openssl` 独立算出的一致；对照组
+（整张证书的哈希）是完全不同的值——即钉的确实是 SPKI；
+文件权限 `0600`；重启幂等；文件损坏时报错而非重新生成。
+
+Android 侧的 KeyStore 部分**尚未在真机上跑过**（headless 环境没有 AndroidKeyStore），
+装到设备上之后请用同一条 `openssl` 命令复核一次导出的证书。
 
 ---
 

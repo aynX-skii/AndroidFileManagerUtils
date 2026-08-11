@@ -52,6 +52,10 @@ dependencies {
     implementation("androidx.camera:camera-view:1.5.1")
     implementation("com.google.zxing:core:3.5.3")
 
+    // 纯 JVM 单元测试。只覆盖不依赖 Android 的那部分 —— 目前是 base32 和
+    // 生成的协议常量，而它们恰好正是「两端必须逐字节一致」的东西。
+    testImplementation("junit:junit:4.13.2")
+
     implementation(platform("androidx.compose:compose-bom:2026.02.01"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
