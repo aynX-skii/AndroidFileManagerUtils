@@ -675,7 +675,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (_state.value.scanning) return
         _state.update { it.copy(scanning = true) }
         viewModelScope.launch {
-            val found = withContext(Dispatchers.IO) { Bridge.probePeers(prefs) }
+            val found = withContext(Dispatchers.IO) { Bridge.probePeers(prefs, peerStore) }
             _state.update { current ->
                 val selected = current.selectedPeer
                     ?: found.firstOrNull { "${it.host}:${it.port}" == prefs.lastPeer }
@@ -701,7 +701,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val port = hostPort.substringAfter(':', "").toIntOrNull() ?: Prefs.DEFAULT_PORT
         viewModelScope.launch {
             val peer = withContext(Dispatchers.IO) {
-                Discovery(prefs).probeHost(host) ?: Discovery.Peer(host, "linux", host, port)
+                Discovery(prefs, peerStore).probeHost(host) ?: Discovery.Peer(host, "linux", host, port)
             }
             _state.update {
                 it.copy(peers = (it.peers + peer).distinctBy { p -> "${p.host}:${p.port}" })
@@ -743,7 +743,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _state.value.selectedPeer?.let { return it }
 
         _state.update { it.copy(scanning = true) }
-        val found = withContext(Dispatchers.IO) { Bridge.probePeers(prefs) }
+        val found = withContext(Dispatchers.IO) { Bridge.probePeers(prefs, peerStore) }
         val peer = found.firstOrNull { "${it.host}:${it.port}" == prefs.lastPeer }
             ?: found.firstOrNull()
         _state.update { it.copy(scanning = false, peers = found, selectedPeer = peer) }

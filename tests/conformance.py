@@ -341,6 +341,30 @@ def t_discovery_no_metadata(ctx: Ctx) -> None:
         )
 
 
+@case("§1.5 发现", "常态应答不含指纹；给了 rid 就得是 8 位 hex")
+def t_discovery_rid(ctx: Ctx) -> None:
+    """
+    v2 草案 §6.1 的滚动 `rid`。它是加在 v1 应答上的**可选**字段，所以这条用例
+    对没实现它的服务端只做形状检查、不要求存在。
+
+    真正守的是另一半：常态应答里**绝不能有 `fp`**。指纹泄露不损失访问权，但它
+    长期不变 —— 谁抓到一次，此后就能算出这台设备每个时间窗的 rid，追踪能力完整
+    （§6.2 的注）。所以它只能出现在用户主动开启的那 60 秒里。
+    """
+    peers = [p for p in discover() if p["_host"] in (ctx.host, "127.0.0.1")]
+    if not peers:
+        raise Skip("没收到发现应答")
+    for p in peers:
+        expect("fp" not in p, f"常态发现应答泄露了指纹 —— 一次泄露 = 永久可追踪: {p}")
+        rid = p.get("rid")
+        if rid is None:
+            continue  # 没实现 v2 发现，不是错误
+        expect(
+            isinstance(rid, str) and re.fullmatch(r"[0-9a-f]{8}", rid) is not None,
+            f"rid 必须是 8 位小写十六进制，实到 {rid!r}",
+        )
+
+
 @case("§1 发现", "应答里绝不含 token")
 def t_discovery_no_token(ctx: Ctx) -> None:
     peers = [p for p in discover() if p["_host"] in (ctx.host, "127.0.0.1")]

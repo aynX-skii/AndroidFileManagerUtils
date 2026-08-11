@@ -47,11 +47,17 @@ object Bridge {
         }
         // The pairing table is what makes v2 possible at all: it is the list of fingerprints
         // allowed through the handshake. Without it the server stays v1-only.
-        val httpServer = HttpServer(app, prefs, PeerStore(app)) { log(it) }
+        val peers = PeerStore(app)
+        val httpServer = HttpServer(app, prefs, peers) { log(it) }
         val port = httpServer.start()
         server = httpServer
 
-        val responder = Discovery(prefs) { log(it) }
+        // The responder needs our own fingerprint to advertise a rolling `rid` (§6.1), and
+        // the table to recognise the replies it hears. Minting touches the keystore, so this
+        // may be null on a device where that failed — discovery then behaves exactly as in v1
+        // rather than refusing to start.
+        val identityFp = runCatching { Identity.ensure()?.fingerprint }.getOrNull()
+        val responder = Discovery(prefs, peers, identityFp) { log(it) }
         runCatching { responder.start { server?.port ?: 0 } }
             .onFailure { log("Discovery unavailable: ${it.message}") }
         discovery = responder
@@ -85,8 +91,9 @@ object Bridge {
         }
     }
 
-    fun probePeers(prefs: Prefs): List<Discovery.Peer> =
-        runCatching { Discovery(prefs) { log(it) }.probe() }.getOrElse {
+    /** [peers] is optional; without it a paired PC that changed IP shows up as a stranger. */
+    fun probePeers(prefs: Prefs, peers: PeerStore? = null): List<Discovery.Peer> =
+        runCatching { Discovery(prefs, peers) { log(it) }.probe() }.getOrElse {
             log("Peer scan failed: ${it.message}")
             emptyList()
         }

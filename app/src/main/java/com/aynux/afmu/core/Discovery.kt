@@ -17,6 +17,17 @@ import java.net.SocketTimeoutException
  */
 class Discovery(
     private val prefs: Prefs,
+    /**
+     * The pairing table, so a reply carrying only a rolling `rid` can still be resolved to a
+     * device we know (§6.1). Null just means no reply is ever recognised — every peer shows
+     * up as a bare address, which is also what happens with v1 peers.
+     */
+    private val peers: PeerStore? = null,
+    /**
+     * Our own SPKI fingerprint, used to compute the `rid` we advertise. Null means we
+     * advertise none, and paired peers will not recognise us.
+     */
+    private val identityFp: ByteArray? = null,
     private val log: (String) -> Unit = {},
 ) {
 
@@ -25,6 +36,12 @@ class Discovery(
         val os: String,
         val host: String,
         val port: Int,
+        /**
+         * Non-empty when this peer is in our pairing table, recognised via the rolling `rid`
+         * (or the `fp` a peer in pairing mode published). Empty is the common case: strangers,
+         * v1 devices, and anything not yet paired.
+         */
+        val fingerprint: String = "",
     ) {
         val url: String get() = "http://$host:$port"
     }
@@ -66,7 +83,8 @@ class Discovery(
             if (!payload.startsWith(PROBE_PREFIX)) continue
             if (!prefs.discoverable) continue
 
-            val reply = describe(prefs, serverPort()).toString().toByteArray(Charsets.UTF_8)
+            val reply = describe(prefs, serverPort(), identityFp).toString()
+                .toByteArray(Charsets.UTF_8)
             runCatching {
                 sock.send(DatagramPacket(reply, reply.size, packet.address, packet.port))
             }.onFailure { log("Discovery reply failed: ${it.message}") }
@@ -107,7 +125,8 @@ class Discovery(
                 }
                 val host = packet.address?.hostAddress ?: continue
                 if (host in mine) continue // our own responder answering the broadcast
-                val peer = parse(host, String(packet.data, packet.offset, packet.length)) ?: continue
+                val peer = parse(host, String(packet.data, packet.offset, packet.length), peers)
+                    ?: continue
                 found["${peer.host}:${peer.port}"] = peer
             }
         }
@@ -128,7 +147,8 @@ class Discovery(
                 sock.receive(packet)
                 parse(
                     packet.address?.hostAddress ?: host,
-                    String(packet.data, packet.offset, packet.length)
+                    String(packet.data, packet.offset, packet.length),
+                    peers,
                 )
             } catch (e: Exception) {
                 null
@@ -177,17 +197,26 @@ class Discovery(
         private val knownNames = HashMap<String, String>()
         private val knownOs = HashMap<String, String>()
 
-        fun describe(prefs: Prefs, serverPort: Int): JSONObject = JSONObject()
-            .put("afmu", HttpServer.PROTOCOL_VERSION)
-            .put("port", serverPort)
-            .also {
-                if (pairingMode()) {
-                    it.put("name", prefs.deviceName)
-                    it.put("os", "android")
+        fun describe(prefs: Prefs, serverPort: Int, identityFp: ByteArray? = null): JSONObject =
+            JSONObject()
+                .put("afmu", HttpServer.PROTOCOL_VERSION)
+                .put("port", serverPort)
+                .also {
+                    // The rolling id goes out in normal mode too (§6.1): a stranger sees only
+                    // random hex, while a device we already paired with computes the same value.
+                    // That is how "no name leak" and "my own devices stay recognisable" coexist.
+                    RollingId.current(identityFp)?.let { rid -> it.put("rid", rid) }
+                    if (pairingMode()) {
+                        it.put("name", prefs.deviceName)
+                        it.put("os", "android")
+                        // The fingerprint goes out only in pairing mode — the minute the user
+                        // asked for. Note this is **one leak = trackable forever**: whoever
+                        // catches the fp can compute our rid in every future window (§6.2).
+                        identityFp?.let { fp -> it.put("fp", Base32.encode(fp)) }
+                    }
                 }
-            }
 
-        private fun parse(host: String, raw: String): Peer? {
+        private fun parse(host: String, raw: String, peers: PeerStore? = null): Peer? {
             val json = runCatching { JSONObject(raw.trim()) }.getOrNull() ?: return null
             // Missing field: not one of ours. A major version we do not know: it may mean
             // anything at all, so refuse rather than guess (PROTOCOL.md §7).
@@ -199,18 +228,56 @@ class Discovery(
             // Remember them once seen, so the everyday list still shows names for devices we
             // already know and only strangers appear as a bare address.
             val key = "$host:$port"
-            val name = json.optString("name").takeIf { it.isNotEmpty() }
+            var name = json.optString("name").takeIf { it.isNotEmpty() }
                 ?.also { knownNames[key] = it }
                 ?: knownNames[key]
-            val os = json.optString("os").takeIf { it.isNotEmpty() }
+            var os = json.optString("os").takeIf { it.isNotEmpty() }
                 ?.also { knownOs[key] = it }
                 ?: knownOs[key]
+
+            // The pairing table beats knownNames: the latter is keyed by host:port and is
+            // lost the moment DHCP hands out a different address, while the table is keyed by
+            // fingerprint and survives it (§13 question 3).
+            val fp = peers?.let { identify(json, host, port, it) }
+            if (fp != null) {
+                val record = peers.find(fp)
+                if (name == null) name = record?.name
+                if (os == null) os = record?.os
+            }
+
             return Peer(
                 name = name ?: host,
                 os = os ?: "unknown",
                 host = host,
                 port = port,
+                fingerprint = fp.orEmpty(),
             )
+        }
+
+        /**
+         * Which paired device sent this reply, or null when we do not know it — which is the
+         * common case and not an error.
+         */
+        private fun identify(json: JSONObject, host: String, port: Int, peers: PeerStore): String? {
+            // A peer in pairing mode publishes its `fp` outright (§6.2). It is public
+            // information and leaking it costs no access. But **publishing it is not proof**:
+            // only a fingerprint already in the table counts as recognition, or anyone could
+            // claim to be a device we know.
+            val claimed = PeerCodec.normalize(json.optString("fp"))
+            if (claimed != null && peers.isPaired(claimed)) return noteIdentified(claimed, host, port, peers)
+
+            val rid = json.optString("rid").takeIf { it.isNotEmpty() } ?: return null
+            val now = System.currentTimeMillis() / 1000
+            val hit = peers.all().firstOrNull { RollingId.matches(Base32.decode(it.fp), rid, now) }
+            return hit?.let { noteIdentified(it.fp, host, port, peers) }
+        }
+
+        private fun noteIdentified(fp: String, host: String, port: Int, peers: PeerStore): String {
+            // Recognising a device that moved to a new address is half the point of the rid
+            // (§13 question 3). Refreshing the hint means the next connection already knows
+            // which fingerprint to pin.
+            peers.noteSeen(fp, host, port)
+            return fp
         }
     }
 }
