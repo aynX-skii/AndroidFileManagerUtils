@@ -11,8 +11,9 @@ package com.aynux.afmu.core
  * attacker wants, and on the Linux side the server is a single event loop where sleeping
  * would stall everything.
  *
- * Values here must match `afmu::kAuthFail*` in the Linux `AuthThrottle.h`. Two ends that
- * throttle differently on the same network look like a flaky network, not like a policy.
+ * The values come from docs/constants.json and are generated into both ends, so they
+ * cannot drift. Two ends throttling differently on one network looks like a flaky
+ * network, not like a policy — which is why this is generated rather than copied.
  */
 object AuthThrottle {
 
@@ -64,8 +65,8 @@ object AuthThrottle {
         entries.entries.removeAll { now - it.value.lastFail > FORGET_MS }
     }
 
-    /** The first few are free — the token is copied by hand and typos are normal. */
-    private const val GRACE = 5
-    private const val MAX_BACKOFF_SEC = 60
-    private const val FORGET_MS = 15 * 60 * 1000L
+    // All three come from docs/constants.json, so the two ends cannot drift apart.
+    private const val GRACE = ProtocolConstants.AUTH_FAIL_GRACE
+    private const val MAX_BACKOFF_SEC = ProtocolConstants.AUTH_BACKOFF_MAX_SEC
+    private const val FORGET_MS = ProtocolConstants.AUTH_FAIL_FORGET_SEC * 1000L
 }

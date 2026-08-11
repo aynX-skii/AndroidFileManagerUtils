@@ -813,8 +813,8 @@ class HttpServer(
     private fun jsonError(message: String) = JSONObject().put("ok", false).put("error", message)
 
     companion object {
-        const val PROTOCOL_VERSION = 1
-        private const val SOCKET_TIMEOUT_MS = 120_000
+        const val PROTOCOL_VERSION = ProtocolConstants.PROTOCOL_VERSION
+        private const val SOCKET_TIMEOUT_MS = ProtocolConstants.SOCKET_TIMEOUT_SEC * 1000
         private const val COPY_BUFFER = 128 * 1024
         private const val MAX_DRAIN = 1L shl 20
 

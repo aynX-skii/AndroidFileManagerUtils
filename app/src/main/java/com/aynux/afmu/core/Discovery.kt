@@ -137,10 +137,9 @@ class Discovery(
     }
 
     companion object {
-        const val PROBE_PREFIX = "AFMU-DISCOVER"
+        const val PROBE_PREFIX = ProtocolConstants.PROBE_PREFIX
 
-        /** Must match `afmu::kPairingModeSec` on the Linux side. */
-        const val PAIRING_MODE_SEC = 60L
+        const val PAIRING_MODE_SEC = ProtocolConstants.PAIRING_MODE_SEC.toLong()
         private val PAIRING_MODE_MS = PAIRING_MODE_SEC * 1000
 
         /**

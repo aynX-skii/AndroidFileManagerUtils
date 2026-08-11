@@ -26,7 +26,7 @@ import javax.crypto.spec.SecretKeySpec
 object DownloadTicket {
 
     /** Seconds from issue to **start** of the download, not to its completion. */
-    const val TTL_SEC = 10L
+    const val TTL_SEC = ProtocolConstants.TICKET_TTL_SEC.toLong()
 
     /**
      * `<exp>.<mac>` — exp is Unix seconds, mac is base64url of HMAC-SHA256 truncated to
@@ -62,6 +62,6 @@ object DownloadTicket {
             .take(MAC_CHARS)
     }
 
-    private const val DOMAIN = "afmu-dl-v1\n"
-    private const val MAC_CHARS = 22
+    private const val DOMAIN = ProtocolConstants.TICKET_DOMAIN
+    private const val MAC_CHARS = ProtocolConstants.TICKET_MAC_CHARS
 }

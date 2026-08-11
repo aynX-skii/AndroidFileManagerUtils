@@ -14,6 +14,27 @@
 （手机收文件 → 手机当服务端；手机推文件到 PC → PC 当服务端）。因此 Linux 端最终
 要实现两半：客户端（`ls` / `get` / `put`）和服务端（`serve`）。
 
+### 常量的唯一真源
+
+本文档里出现的所有**两端必须一致**的数值（端口、超时、冷却时长、退避参数、
+券的 TTL 与截断长度……）都在 [`constants.json`](constants.json) 里，
+由 [`tools/gen_constants.py`](../tools/gen_constants.py) 生成两端的常量文件：
+
+```bash
+python3 tools/gen_constants.py          # 重新生成
+python3 tools/gen_constants.py --check  # 只比对，漂了就退出 1
+```
+
+生成结果（`ProtocolConstants.kt` / `ProtocolConstants.h`）**两个仓库都提交**，
+所以各自单独 clone 也能构建，不需要另一个仓库在场。它们带 DO-NOT-EDIT 头，
+改值请改 `constants.json` 再重新生成。
+
+> 这些常量以前是靠注释互指来同步的——"两边必须一致，否则…"写了四五处。
+> 问题在于不一致的表现是"同一个网络里两台设备行为不同"，
+> 排查时第一反应会是网络问题，根本不会想到常量。
+>
+> 纯本地的调优值（缓冲区大小、写入水位线）**不在**这里：它们本来就该各调各的。
+
 ---
 
 ## 1. 设备发现（UDP 8766）

@@ -1,0 +1,89 @@
+{
+  "_comment": [
+    "协议常量的唯一真源。改这里，然后跑 tools/gen_constants.py 重新生成两端的文件。",
+    "",
+    "只放**两端必须一致**的东西 —— 线格式，以及那些一端改了另一端就会行为不同的策略参数。",
+    "纯本地的调优值（缓冲区大小、写入水位线）不属于这里：它们本来就该各调各的。",
+    "",
+    "之前这些是靠注释互指来同步的（『两边必须一致，否则…』写了四五处）。",
+    "注释顶得住一时，顶不住半年。"
+  ],
+  "groups": [
+    {
+      "name": "线格式",
+      "doc": "PROTOCOL.md §1 / §2。改这些等于改协议，要同时升 protocolVersion。",
+      "constants": [
+        { "name": "protocolVersion", "value": 1,
+          "doc": "发现应答的 afmu 字段、/api/info 的 protocol 字段" },
+        { "name": "defaultHttpPort", "value": 8765,
+          "doc": "首选 HTTP 端口。客户端不能硬编码它，要以发现应答里的 port 为准（§2.1）" },
+        { "name": "discoveryPort", "value": 8766, "doc": "UDP 发现端口" },
+        { "name": "probePrefix", "value": "AFMU-DISCOVER",
+          "doc": "探测包只校验前缀，后面的版本号留作以后扩展（§1.1）" },
+        { "name": "probePayload", "value": "AFMU-DISCOVER/1\n", "doc": "探测包的完整载荷" },
+        { "name": "tokenHeader", "value": "X-AFMU-Token", "doc": "推荐的 token 头（§2.2）" },
+        { "name": "partSuffix", "value": ".afmu-part",
+          "doc": "落盘前的临时后缀。传输中断时删掉，绝不留下半个文件冒充完整文件（§4.3）" },
+        { "name": "pairUriPrefix", "value": "afmu://pair?", "doc": "配对二维码的载荷前缀（§5）" },
+        { "name": "socketTimeoutSec", "value": 120, "doc": "服务端 socket 空闲超时（§2.3）" }
+      ]
+    },
+    {
+      "name": "token",
+      "doc": "PROTOCOL.md §2.2。token 是手抄的，所以字母表去掉了易混字符。",
+      "constants": [
+        { "name": "tokenAlphabet", "value": "abcdefghjkmnpqrstuvwxyz23456789",
+          "doc": "去掉了 i l o 0 1 —— 这串要用户看着屏幕敲到另一台机器上" },
+        { "name": "tokenLength", "value": 10, "doc": "约 49 bit 熵；配合失败退避足够" }
+      ]
+    },
+    {
+      "name": "失败退避",
+      "doc": "PROTOCOL.md §2.2「失败退避」。两端不一致的话，同一个网络里表现不同，排查时会以为是网络问题。",
+      "constants": [
+        { "name": "authFailGrace", "value": 5,
+          "doc": "前几次失败不惩罚 —— token 是手抄的，打错很正常" },
+        { "name": "authBackoffMaxSec", "value": 60,
+          "doc": "退避上限，避免一次误操作把自己锁死太久" },
+        { "name": "authFailForgetSec", "value": 900, "doc": "这么久没有新的失败就把记录忘掉" }
+      ]
+    },
+    {
+      "name": "授权请求",
+      "doc": "PROTOCOL.md §3.8。这是唯一免鉴权的接口，所有防滥用参数都在这里。",
+      "constants": [
+        { "name": "authTimeoutSec", "value": 60,
+          "doc": "等待用户决定的上限。两端不一致会出现『一端还在轮询、另一端已经把请求丢掉』的窗口" },
+        { "name": "authResultRetentionExtraSec", "value": 30,
+          "doc": "结果在超时之后再多留这么久，让最后一刻做的决定也能被取走" },
+        { "name": "denyCooldownSec", "value": 60, "doc": "单地址被拒后的基础冷却，按拒绝次数翻倍" },
+        { "name": "denyCooldownMaxSec", "value": 1800, "doc": "单地址冷却上限" },
+        { "name": "timeoutCooldownSec", "value": 60,
+          "doc": "超时算软拒绝：固定冷却，不参与升级计数 —— 对方没做错什么，是用户没来得及看" },
+        { "name": "globalCooldownSec", "value": 10,
+          "doc": "全局冷却基数。不看是谁在请求 —— 这是唯一能挡住换 IP 刷屏的东西" },
+        { "name": "globalCooldownMaxSec", "value": 300, "doc": "全局冷却上限" },
+        { "name": "refusalForgetSec", "value": 1800, "doc": "这么久没有新的拒绝就把升级计数忘掉" }
+      ]
+    },
+    {
+      "name": "配对模式",
+      "doc": "PROTOCOL.md §1.5。常态下发现应答不含设备名。",
+      "constants": [
+        { "name": "pairingModeSec", "value": 60,
+          "doc": "用户点『允许被发现』之后，应答带上 name/os 的时长" }
+      ]
+    },
+    {
+      "name": "下载券",
+      "doc": "PROTOCOL.md §2.5。浏览器 <a href> 带不了自定义头，用它顶替 ?token=。",
+      "constants": [
+        { "name": "ticketTtlSec", "value": 10,
+          "doc": "约束的是**开始**下载，不是传完 —— 否则等于禁止下载大文件" },
+        { "name": "ticketMacChars", "value": 22, "doc": "base64url 截断长度，22 字符 = 132 bit" },
+        { "name": "ticketDomain", "value": "afmu-dl-v1\n",
+          "doc": "域分隔前缀，保证这个 MAC 不会被当成同一把钥匙算出来的别的用途的 MAC" }
+      ]
+    }
+  ]
+}

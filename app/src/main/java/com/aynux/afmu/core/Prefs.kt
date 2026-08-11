@@ -92,8 +92,8 @@ class Prefs(context: Context) {
     }
 
     companion object {
-        const val DEFAULT_PORT = 8765
-        const val DISCOVERY_PORT = 8766
+        const val DEFAULT_PORT = ProtocolConstants.DEFAULT_HTTP_PORT
+        const val DISCOVERY_PORT = ProtocolConstants.DISCOVERY_PORT
 
         /** Process-wide: every [Prefs] instance shares the one underlying preferences file. */
         private val TOKEN_LOCK = Any()
@@ -115,7 +115,8 @@ class Prefs(context: Context) {
         private const val KEY_LAST_PEER = "last_peer"
 
         // No look-alike characters: this gets typed by hand on the PC.
-        private const val ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"
-        private const val TOKEN_LENGTH = 10
+        // Both live in docs/constants.json — the Linux side mints tokens too.
+        private const val ALPHABET = ProtocolConstants.TOKEN_ALPHABET
+        private const val TOKEN_LENGTH = ProtocolConstants.TOKEN_LENGTH
     }
 }
