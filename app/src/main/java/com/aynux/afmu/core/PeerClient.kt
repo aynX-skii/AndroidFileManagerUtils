@@ -363,7 +363,9 @@ class PeerClient(private val context: Context) {
      */
     private fun pinningFactory(expectedFp: String): javax.net.ssl.SSLSocketFactory? {
         val identity = Identity.ensure() ?: return null
-        val trust = Tls.PinningTrustManager { fp -> fp == expectedFp }
+        // No guest allowance on this side: when we dial out, an unpaired peer is exactly the
+        // man in the middle we are checking for.
+        val trust = Tls.PinningTrustManager(isAllowed = { fp -> fp == expectedFp })
         return Tls.socketFactory(identity, trust)
     }
 

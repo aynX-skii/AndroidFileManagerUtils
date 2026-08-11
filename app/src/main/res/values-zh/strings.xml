@@ -74,7 +74,11 @@
     <string name="encryption_key_tee">私钥在安全芯片里</string>
     <string name="encryption_key_software">私钥是软件密钥 —— 这台手机没有安全硬件</string>
     <string name="encrypted_only">只接受加密连接</string>
-    <string name="encrypted_only_desc">手机一次只能提供一种协议：打开之后，未加密的连接会被直接断开、不回任何响应，网页界面也一起用不了。只有已配对的设备连得上，而目前还没有别的端支持加密。</string>
+    <string name="encrypted_only_desc">手机一次只能提供一种协议：打开之后，未加密的连接会被直接断开、不回任何响应。已配对的设备走加密连接；访客模式开着时，浏览器也能用 https 连进来。</string>
+    <string name="zero_trust">零信任模式</string>
+    <string name="zero_trust_desc">只接受已配对设备的加密连接。明文和访客模式一并关闭，下面两个开关随之失效。认证从此只靠双方的密钥，不靠任何共享密码。</string>
+    <string name="guest_mode">访客模式（浏览器）</string>
+    <string name="guest_mode_desc">提供网页界面，并允许没有配对过的设备凭访问密码连接。走 https 时它挡得住偷听，但挡不住中间人 —— 只在你信任的网络里用。</string>
 
     <!-- 已配对设备（协议 v2 的配对表） -->
     <string name="paired_devices">已配对设备</string>

@@ -820,10 +820,29 @@ private fun EncryptionCard(
         }
 
         ToggleRow(
+            title = stringResource(R.string.zero_trust),
+            subtitle = stringResource(R.string.zero_trust_desc),
+            checked = state.zeroTrustMode,
+            onChange = { viewModel.setZeroTrustMode(it) },
+        )
+
+        ToggleRow(
             title = stringResource(R.string.encrypted_only),
             subtitle = stringResource(R.string.encrypted_only_desc),
-            checked = state.encryptedOnly,
+            checked = state.encryptedOnly || state.zeroTrustMode,
+            enabled = !state.zeroTrustMode,
             onChange = { viewModel.setEncryptedOnly(it) },
+        )
+
+        // Guest mode is the browser interface. The wording stays blunt on purpose — dressed
+        // up as safe, it gets used where it should not be (draft §9).
+        ToggleRow(
+            title = stringResource(R.string.guest_mode),
+            subtitle = stringResource(R.string.guest_mode_desc),
+            checked = state.guestMode && !state.zeroTrustMode,
+            enabled = !state.zeroTrustMode,
+            warn = true,
+            onChange = { viewModel.setGuestMode(it) },
         )
     }
 }
@@ -1052,17 +1071,28 @@ private fun ToggleRow(
     subtitle: String,
     checked: Boolean,
     onChange: (Boolean) -> Unit,
+    enabled: Boolean = true,
+    /** Draws the subtitle as a warning. For settings that weaken a guarantee. */
+    warn: Boolean = false,
 ) {
+    // Greyed rather than hidden: a switch that vanished leaves the user wondering why the
+    // browser stopped working, with nothing on screen to connect it to.
+    val dim = if (enabled) 1f else 0.45f
     Row(verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                title,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = dim),
+            )
             Text(
                 subtitle,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = (if (warn && enabled && checked) MaterialTheme.colorScheme.error
+                         else MaterialTheme.colorScheme.onSurfaceVariant).copy(alpha = dim),
             )
         }
-        Switch(checked = checked, onCheckedChange = onChange)
+        Switch(checked = checked, onCheckedChange = onChange, enabled = enabled)
     }
 }
 

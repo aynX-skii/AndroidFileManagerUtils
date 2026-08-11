@@ -77,7 +77,11 @@
     <string name="encryption_key_tee">Private key in the secure element</string>
     <string name="encryption_key_software">Private key in software — this phone has no secure hardware</string>
     <string name="encrypted_only">Accept encrypted connections only</string>
-    <string name="encrypted_only_desc">This phone serves one protocol at a time: with this on, unencrypted connections are dropped without a reply — including the browser page. Only paired devices can connect, and nothing else speaks encryption yet.</string>
+    <string name="encrypted_only_desc">This phone serves one protocol at a time: with this on, unencrypted connections are dropped without a reply. Paired devices connect over the encrypted link; a browser can too, over https, if guest mode is on.</string>
+    <string name="zero_trust">Zero-trust mode</string>
+    <string name="zero_trust_desc">Accept encrypted connections from paired devices only. Plaintext and guest mode are switched off with it, and the two switches below stop applying. Authentication then rests on both devices\' keys, not on any shared password.</string>
+    <string name="guest_mode">Guest mode (browser)</string>
+    <string name="guest_mode_desc">Serves the browser interface and accepts the access password from devices you have never paired with. Over https it stops eavesdropping, but not a man in the middle — use it only on a network you trust.</string>
 
     <!-- 已配对设备（协议 v2 的配对表） -->
     <string name="paired_devices">Paired devices</string>

@@ -58,7 +58,59 @@ object WebUi {
         val newFolderName = if (zh) "新目录名" else "New folder name"
         val cancel = if (zh) "取消" else "Cancel"
         val retry = if (zh) "重试" else "Retry"
+
+        // 访客模式的说明（草案 §9）。措辞上不做任何美化：它确实防不住中间人，
+        // 说成「安全」用户就会在不该用的地方用它。
+        val guestBanner = if (zh)
+            "访客模式：这个页面用密码认证，防得住偷听，防不住中间人 —— 只在你信任的网络里用。"
+        else
+            "Guest mode: this page authenticates with a password. It stops eavesdropping, not "
+            .plus("a man in the middle. Use it only on a network you trust.")
+        val guestOffTitle = if (zh) "访客模式已关闭" else "Guest mode is off"
+        val guestOffBody = if (zh)
+            "这台设备现在只接受已配对设备的加密连接。浏览器做不到那种连接（它不会出示客户端证书），所以网页界面不可用。"
+        else
+            "This device now only accepts encrypted connections from paired devices. A browser "
+            .plus("cannot make one — it never presents a client certificate — so the web interface ")
+            .plus("is unavailable.")
+        val guestOffHow = if (zh)
+            "要用网页界面，请在 App 的「设置 → 加密连接」里重新打开访客模式。用 FileBridge App 或 afmu 客户端则不受影响。"
+        else
+            "To use it, turn guest mode back on in Settings → Encrypted connections. The "
+            .plus("FileBridge app and the afmu client are unaffected.")
     }
+
+    /**
+     * What a browser gets when guest mode is off.
+     *
+     * A page rather than a bare 403: someone typed this address expecting a file manager, and
+     * "Forbidden" alone would send them off checking the network. Says what happened, why a
+     * browser specifically cannot get in, and which switch changes it.
+     */
+    fun guestModeOff(zh: Boolean): String = guestModeOff(Text(zh))
+
+    private fun guestModeOff(t: Text): String = """
+<!doctype html>
+<html lang="${t.htmlLang}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${t.guestOffTitle}</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+         max-width: 34rem; margin: 12vh auto; padding: 0 1.25rem; }
+  h1 { font-size: 1.25rem; margin: 0 0 .75rem; }
+  p { margin: 0 0 .75rem; opacity: .85; }
+</style>
+</head>
+<body>
+<h1>🔒 ${t.guestOffTitle}</h1>
+<p>${t.guestOffBody}</p>
+<p>${t.guestOffHow}</p>
+</body>
+</html>
+"""
 
     fun page(deviceName: String, zh: Boolean): String = page(deviceName, Text(zh))
 
@@ -136,6 +188,9 @@ object WebUi {
   .toolbar input[type=search] { width:200px; }
 
   #banner { padding:10px 14px; border-radius:10px; margin-bottom:14px; font-size:14px; }
+  /* 常驻，不可关闭：这条说明的意义就在于它一直在那儿。关得掉的警示等于没有。 */
+  #guestnote { padding:10px 14px; border-radius:10px; margin-bottom:14px; font-size:13px;
+               background:rgba(240,180,41,.12); border:1px solid rgba(240,180,41,.45); }
   #banner.err { background:rgba(198,42,47,.12); color:var(--danger); }
   #banner.ok  { background:rgba(11,122,85,.12); color:var(--accent); }
 
@@ -208,6 +263,7 @@ object WebUi {
 </header>
 
 <main>
+  <div id="guestnote" role="note">⚠ ${t.guestBanner}</div>
   <div id="banner" class="hidden" role="status"></div>
 
   <section class="card">

@@ -100,47 +100,53 @@ object Tls {
      */
     class PinningTrustManager(
         private val isAllowed: (String) -> Boolean,
+        /**
+         * Guest mode (§9): let an unpaired **client** finish the handshake, so it can go on to
+         * the password check. Never applies to servers we dial — there, an unpaired peer is
+         * the man in the middle we are looking for.
+         *
+         * Note this only covers a client that offers a certificate we do not know. A client
+         * offering none never reaches a TrustManager at all under `wantClientAuth`, so who is
+         * allowed in anonymously is decided by the caller after the handshake, from the
+         * session — see HttpServer.handle.
+         */
+        private val allowUnpairedClient: () -> Boolean = { false },
     ) : X509ExtendedTrustManager() {
 
         override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) =
-            check(chain)
+            check(chain, client = true)
 
         override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) =
-            check(chain)
+            check(chain, client = false)
 
         override fun checkClientTrusted(
             chain: Array<out X509Certificate>?,
             authType: String?,
             socket: Socket?,
-        ) = check(chain)
+        ) = check(chain, client = true)
 
         override fun checkServerTrusted(
             chain: Array<out X509Certificate>?,
             authType: String?,
             socket: Socket?,
-        ) = check(chain)
+        ) = check(chain, client = false)
 
         override fun checkClientTrusted(
             chain: Array<out X509Certificate>?,
             authType: String?,
             engine: SSLEngine?,
-        ) = check(chain)
+        ) = check(chain, client = true)
 
         override fun checkServerTrusted(
             chain: Array<out X509Certificate>?,
             authType: String?,
             engine: SSLEngine?,
-        ) = check(chain)
+        ) = check(chain, client = false)
 
         /** Empty on purpose: no CA is acceptable, because no CA is involved. */
         override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
 
-        /** The fingerprint of the peer on the last connection this manager vetted. */
-        @Volatile
-        var lastFingerprint: String = ""
-            private set
-
-        private fun check(chain: Array<out X509Certificate>?) {
+        private fun check(chain: Array<out X509Certificate>?, client: Boolean) {
             // No certificate at all has to fail here too. On the server side a peer that
             // offers nothing would otherwise complete the handshake anonymously, which turns
             // mutual TLS back into one-way TLS without anything looking wrong.
@@ -148,9 +154,12 @@ object Tls {
                 ?: throw CertificateException("peer presented no certificate")
 
             val fp = fingerprintOf(leaf)
-            lastFingerprint = fp
             if (fp.isEmpty()) throw CertificateException("cannot compute the peer's fingerprint")
-            if (!isAllowed(fp)) throw CertificateException("fingerprint $fp is not paired")
+            if (isAllowed(fp)) return
+            // Unpaired. Fatal, except for a client in guest mode — which still has a password
+            // to get past, and is still marked unpaired for the rest of the connection.
+            if (client && allowUnpairedClient()) return
+            throw CertificateException("fingerprint $fp is not paired")
         }
     }
 

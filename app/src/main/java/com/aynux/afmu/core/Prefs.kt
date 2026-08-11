@@ -9,6 +9,29 @@ class Prefs(context: Context) {
 
     private val sp = context.getSharedPreferences("afmu", Context.MODE_PRIVATE)
 
+    init {
+        settleGuestMode()
+    }
+
+    /**
+     * Decides guest mode once, on the very first run after this version lands, and writes the
+     * answer down (§9).
+     *
+     * Off on a fresh install — the draft asks for that and it is right, a password does not
+     * stop a man in the middle. On for an upgrade — someone already using the browser
+     * interface must not find it silently stops opening one day with nothing to point at.
+     * That is the same class of problem as silently swapping the key pair.
+     *
+     * Deciding it here rather than in a getter's default matters: [token] mints itself on
+     * first read, so "does the file have keys in it" gives a different answer depending on
+     * what got read first. A one-time decision at construction has no such ordering.
+     */
+    private fun settleGuestMode() = synchronized(TOKEN_LOCK) {
+        if (sp.contains(KEY_GUEST_MODE)) return@synchronized
+        val upgrading = sp.all.isNotEmpty()
+        sp.edit().putBoolean(KEY_GUEST_MODE, upgrading).apply()
+    }
+
     var port: Int
         get() = sp.getInt(KEY_PORT, DEFAULT_PORT)
         set(value) = sp.edit().putInt(KEY_PORT, value).apply()
@@ -51,6 +74,39 @@ class Prefs(context: Context) {
     var allowLegacyPlaintext: Boolean
         get() = sp.getBoolean(KEY_ALLOW_PLAINTEXT, true)
         set(value) = sp.edit().putBoolean(KEY_ALLOW_PLAINTEXT, value).apply()
+
+    /**
+     * Zero-trust mode (PROTOCOL-v2-DRAFT.md §9): only paired devices, only encrypted.
+     *
+     * Turning it on forces both [allowLegacyPlaintext] and [guestMode] off. The UI keeps
+     * showing those switches, greyed — hiding them would leave the user wondering why the
+     * browser stopped working with no visible cause.
+     */
+    var zeroTrustMode: Boolean
+        get() = sp.getBoolean(KEY_ZERO_TRUST, false)
+        set(value) = sp.edit().putBoolean(KEY_ZERO_TRUST, value).apply()
+
+    /**
+     * Guest mode (§9): the browser interface and password authentication.
+     *
+     * **It cannot meet the v2 bar, and no implementation effort would change that.** Browsers
+     * do not present client certificates for mutual TLS, and a self-signed server certificate
+     * only produces a scary warning the user clicks through — which is exactly the moment the
+     * man-in-the-middle protection is discarded. Over HTTPS it stops passive sniffing, and
+     * that is all it claims.
+     *
+     * Off on a fresh install, on when upgrading — decided once in [settleGuestMode]. Ask
+     * [guestModeActive] rather than this, so zero-trust mode is honoured.
+     */
+    var guestMode: Boolean
+        get() = sp.getBoolean(KEY_GUEST_MODE, false)
+        set(value) = sp.edit().putBoolean(KEY_GUEST_MODE, value).apply()
+
+    /** What the server should actually ask: the switch, unless zero-trust overrides it. */
+    val guestModeActive: Boolean get() = guestMode && !zeroTrustMode
+
+    /** Zero-trust mode greys the guest switch rather than hiding it. */
+    val guestModeAvailable: Boolean get() = !zeroTrustMode
 
     /** Answer discovery probes so the PC can find this phone without typing an IP. */
     var discoverable: Boolean
@@ -118,6 +174,8 @@ class Prefs(context: Context) {
         private const val KEY_INBOX = "inbox"
         private const val KEY_DISCOVERABLE = "discoverable"
         private const val KEY_ALLOW_PLAINTEXT = "allowLegacyPlaintext"
+        private const val KEY_ZERO_TRUST = "zeroTrustMode"
+        private const val KEY_GUEST_MODE = "guestMode"
         private const val KEY_SERVER_ENABLED = "server_enabled"
         private const val KEY_LANGUAGE = "language"
 

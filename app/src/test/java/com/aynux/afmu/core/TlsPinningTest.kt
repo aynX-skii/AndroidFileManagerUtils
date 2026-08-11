@@ -76,17 +76,16 @@ class TlsPinningTest {
 
     @Test
     fun `a paired fingerprint is accepted`() {
-        val tm = Tls.PinningTrustManager { it == expectedBase32 }
+        val tm = Tls.PinningTrustManager(isAllowed = { it == expectedBase32 })
         tm.checkClientTrusted(arrayOf(cert), "EC")
         tm.checkServerTrusted(arrayOf(cert), "EC")
-        assertEquals(expectedBase32, tm.lastFingerprint)
     }
 
     @Test
     fun `an unpaired fingerprint throws`() {
         // 必须是**抛异常**：返回值形式的拒绝会被 TLS 栈忽略，握手照常完成，
         // 于是「校验过了」变成一句空话。
-        val tm = Tls.PinningTrustManager { false }
+        val tm = Tls.PinningTrustManager(isAllowed = { false })
         try {
             tm.checkServerTrusted(arrayOf(cert), "EC")
             fail("未配对的指纹必须抛异常")
@@ -99,7 +98,7 @@ class TlsPinningTest {
     fun `no certificate at all throws`() {
         // 服务端方向尤其要紧：wantClientAuth 下对端不交证书握手照样能成，
         // 判空是把双向 TLS 变回单向 TLS 的唯一防线。
-        val tm = Tls.PinningTrustManager { true }
+        val tm = Tls.PinningTrustManager(isAllowed = { true })
         for (chain in listOf(null, emptyArray<X509Certificate>())) {
             try {
                 tm.checkClientTrusted(chain, "EC")
@@ -113,7 +112,54 @@ class TlsPinningTest {
     @Test
     fun `accepts no certificate authority`() {
         // 空的 issuer 列表是有意的：这里根本没有 CA，链校验被整个换成了指纹比对。
-        assertEquals(0, Tls.PinningTrustManager { true }.acceptedIssuers.size)
+        assertEquals(0, Tls.PinningTrustManager(isAllowed = { true }).acceptedIssuers.size)
+    }
+
+    // ------------------------------------------------------------ 访客模式（草案 §9）
+
+    @Test
+    fun `guest mode lets an unpaired client through, but never an unpaired server`() {
+        val tm = Tls.PinningTrustManager(isAllowed = { false }, allowUnpairedClient = { true })
+
+        // 客户端方向：放行。它后面还有密码那道门，而且这条连接全程算「未配对」。
+        tm.checkClientTrusted(arrayOf(cert), "EC")
+
+        // 服务端方向：绝不放行。我们主动连出去时，未配对的对端正是要找的那个中间人 ——
+        // 访客模式是「让浏览器进得来」，不是「我们连出去时也不查了」。
+        try {
+            tm.checkServerTrusted(arrayOf(cert), "EC")
+            fail("访客模式绝不能放松我们连出去时的校验")
+        } catch (e: CertificateException) {
+            assertTrue(e.message.orEmpty().contains(expectedBase32))
+        }
+    }
+
+    @Test
+    fun `guest mode still refuses a peer with no certificate at all`() {
+        // 没有证书 ≠ 访客。真正的匿名连接由 HttpServer 在握手之后按会话判断，
+        // 这里放行等于让「拿不出证书」和「拿得出但没配对」变成同一回事。
+        val tm = Tls.PinningTrustManager(isAllowed = { true }, allowUnpairedClient = { true })
+        try {
+            tm.checkClientTrusted(null, "EC")
+            fail("没有证书时必须抛异常")
+        } catch (e: CertificateException) {
+            // 正是想要的
+        }
+    }
+
+    @Test
+    fun `guest mode is read per connection, not captured once`() {
+        // 开关是现读的：改完设置要下一条连接就生效，而不是等重启服务。
+        var guest = false
+        val tm = Tls.PinningTrustManager(isAllowed = { false }, allowUnpairedClient = { guest })
+        try {
+            tm.checkClientTrusted(arrayOf(cert), "EC")
+            fail("访客模式关着时未配对的客户端必须被拒")
+        } catch (e: CertificateException) {
+            // 正是想要的
+        }
+        guest = true
+        tm.checkClientTrusted(arrayOf(cert), "EC")
     }
 
     @Test

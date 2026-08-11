@@ -131,6 +131,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         /** Serve encrypted connections only — the phone cannot serve both at once, see
          *  [com.aynux.afmu.core.HttpServer.handle]. */
         val encryptedOnly: Boolean = false,
+        /** Zero-trust mode: paired devices only, encrypted only (draft §9). */
+        val zeroTrustMode: Boolean = false,
+        /** Guest mode: the browser interface and password auth. See [Prefs.guestMode]. */
+        val guestMode: Boolean = false,
         val selectedPeer: Discovery.Peer? = null,
         val peerToken: String = "",
         val scanning: Boolean = false,
@@ -231,6 +235,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 writable = prefs.writable,
                 discoverable = prefs.discoverable,
                 encryptedOnly = !prefs.allowLegacyPlaintext,
+                zeroTrustMode = prefs.zeroTrustMode,
+                guestMode = prefs.guestMode,
                 peerToken = prefs.peerToken,
                 allowAuthRequests = prefs.allowAuthRequests,
                 language = prefs.language,
@@ -257,6 +263,37 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             TransferService.stop(app)
             TransferService.start(app)
         }
+    }
+
+    /**
+     * Zero-trust mode: paired devices only, encrypted only (draft §9).
+     *
+     * Forces encrypted-only on as well, so the setting the server reads and the switch the
+     * user sees never disagree. Restarts the server for the same reason [setEncryptedOnly]
+     * does — this changes what the listening socket is.
+     */
+    fun setZeroTrustMode(value: Boolean) {
+        prefs.zeroTrustMode = value
+        if (value) prefs.allowLegacyPlaintext = false
+        _state.update {
+            it.copy(zeroTrustMode = value, encryptedOnly = value || it.encryptedOnly)
+        }
+        if (_state.value.serverRunning) {
+            val app = getApplication<Application>()
+            TransferService.stop(app)
+            TransferService.start(app)
+        }
+    }
+
+    /**
+     * Guest mode: the browser interface and password authentication (draft §9).
+     *
+     * No restart — the server reads it per connection, so the next one already sees the
+     * change. Restarting would cut off transfers in flight for nothing.
+     */
+    fun setGuestMode(value: Boolean) {
+        prefs.guestMode = value
+        _state.update { it.copy(guestMode = value) }
     }
 
     fun setServerRunning(running: Boolean) {

@@ -82,7 +82,13 @@ class HttpServer(
             log("No usable device identity — encrypted connections are unavailable")
             return
         }
-        val trust = Tls.PinningTrustManager { fp -> store.isPaired(fp) }
+        val trust = Tls.PinningTrustManager(
+            isAllowed = { fp -> store.isPaired(fp) },
+            // Guest mode lets an unpaired client past the handshake and on to the password
+            // check. Read per-connection, not captured, so flipping the switch takes effect
+            // on the next connection instead of the next restart.
+            allowUnpairedClient = { prefs.guestModeActive },
+        )
         val factory = Tls.socketFactory(identity, trust)
         if (factory == null) {
             log("TLS could not be set up — encrypted connections are unavailable")
@@ -193,21 +199,43 @@ class HttpServer(
         if (factory != null) {
             val ssl = factory.createSocket(raw, remoteHost, raw.port, true) as SSLSocket
             Tls.harden(ssl, server = true)
-            val trust = tlsTrust
             try {
-                // Throws when the peer is unpaired or presents no certificate — and it throws
+                // Throws when the peer offers a certificate we do not accept — and it throws
                 // *here*, before a single request has been read, let alone answered.
                 ssl.startHandshake()
             } catch (e: Exception) {
                 log("Refused an encrypted connection from $remoteHost: ${e.message}")
                 return
             }
-            pairedPeer = trust?.lastFingerprint.orEmpty()
-            if (pairedPeer.isEmpty()) return
-            // A completed v2 connection is proof this peer speaks v2; from here on it is
-            // never allowed back to plaintext (draft §8.2 stage 2).
-            peers?.setPinned(pairedPeer, true)
-            log("$remoteHost connected over an encrypted link")
+
+            // Read the identity off **this connection's** session, not off the TrustManager.
+            //
+            // The TrustManager is shared by every connection, so a field it sets would still
+            // hold the previous peer's fingerprint — and under `wantClientAuth` a client that
+            // presents no certificate never reaches the TrustManager at all. Those two facts
+            // together mean a certificate-less connection would have inherited the last paired
+            // peer's identity and been served as that device. The session cannot be inherited.
+            val leaf = runCatching {
+                ssl.session.peerCertificates.firstOrNull() as? java.security.cert.X509Certificate
+            }.getOrNull()
+            val fp = Tls.fingerprintOf(leaf)
+
+            if (fp.isNotEmpty() && peers?.isPaired(fp) == true) {
+                pairedPeer = fp
+                // A completed v2 connection is proof this peer speaks v2; from here on it is
+                // never allowed back to plaintext (draft §8.2 stage 2).
+                peers.setPinned(fp, true)
+                log("$remoteHost connected over an encrypted link")
+            } else if (prefs.guestModeActive) {
+                // Encrypted, but we have no idea who this is — a browser, most likely, since
+                // browsers never present a client certificate. It stays unpaired for the rest
+                // of the connection and has the password check ahead of it (§9).
+                pairedPeer = ""
+                log("$remoteHost connected as a guest — encrypted, identity unverified")
+            } else {
+                log("Refused an unidentified encrypted connection from $remoteHost")
+                return
+            }
             socket = ssl
         }
 
@@ -277,8 +305,16 @@ class HttpServer(
             return
         }
 
+        val chinese = LocaleHelper.effective(context) == Prefs.LANG_CHINESE
         if (req.path == "/" || req.path == "/index.html") {
-            sendText(out, "200 OK", "text/html; charset=utf-8", WebUi.page(prefs.deviceName, LocaleHelper.effective(context) == Prefs.LANG_CHINESE), true)
+            // The browser interface *is* guest mode (§9). With guest mode off it is not a
+            // page that fails to log in — it is not served at all, and the reply says why.
+            // A login box that can never succeed just gets the password typed twenty times.
+            if (!prefs.guestModeActive) {
+                sendText(out, "403 Forbidden", "text/html; charset=utf-8", WebUi.guestModeOff(chinese), true)
+                return
+            }
+            sendText(out, "200 OK", "text/html; charset=utf-8", WebUi.page(prefs.deviceName, chinese), true)
             return
         }
         if (req.path == "/favicon.ico") {
@@ -289,6 +325,21 @@ class HttpServer(
             sendText(out, "404 Not Found", "text/plain", "no such route", true)
             return
         }
+        // Guest mode off means the password route does not exist at all (§7/§9).
+        //
+        // /api/authorize is blocked with it: its whole job is to hand out a token, and that
+        // token would open nothing. Issuing a credential that cannot work is worse than
+        // saying the route is closed — the user retries it, then goes off checking the
+        // network and the firewall.
+        if (!prefs.guestModeActive && req.pairedPeer.isEmpty()) {
+            drainBody(req)
+            sendJson(
+                out, "403 Forbidden",
+                jsonError("guest mode is off; pair over an encrypted connection"), false,
+            )
+            return
+        }
+
         // Deliberately before the token check: this is how a PC that has no token asks for
         // one. Everything that keeps it from being abused lives in [AuthRequests].
         if (req.path == "/api/authorize") {
