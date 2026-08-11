@@ -185,11 +185,27 @@ class HttpServer(
             handleAuthorize(req, out)
             return
         }
+        // Guessing the token has to cost something (PROTOCOL.md §2.2). While backed off we
+        // do not even compare: the comparison is constant time, but whether we reached it
+        // at all is observable, so the cleanest answer is to stop at the door.
+        val throttled = AuthThrottle.retryAfterSec(req.remoteHost)
+        if (throttled > 0) {
+            drainBody(req)
+            sendRetryAfter(out, throttled)
+            return
+        }
         if (!authorized(req)) {
             drainBody(req)
+            val wait = AuthThrottle.noteFailure(req.remoteHost)
+            if (wait > 0) {
+                log("${req.remoteHost} keeps getting the token wrong — pausing ${wait}s")
+                sendRetryAfter(out, wait)
+                return
+            }
             sendJson(out, "401 Unauthorized", jsonError("invalid or missing token"), false)
             return
         }
+        AuthThrottle.noteSuccess(req.remoteHost)
 
         when (req.path) {
             "/api/pair" -> handlePair(req, out)
@@ -708,6 +724,18 @@ class HttpServer(
 
     private fun sendJson(out: OutputStream, status: String, body: JSONObject, keepAlive: Boolean) {
         sendText(out, status, "application/json; charset=utf-8", body.toString(), keepAlive)
+    }
+
+    /** 429 plus the header that tells a well-behaved client exactly how long to wait. */
+    private fun sendRetryAfter(out: OutputStream, seconds: Int) {
+        val body = jsonError("too many failed attempts, retry in ${seconds}s")
+            .toString().toByteArray(Charsets.UTF_8)
+        sendHeaders(
+            out, "429 Too Many Requests", "application/json; charset=utf-8",
+            body.size.toLong(), mapOf("Retry-After" to seconds.toString()), false,
+        )
+        out.write(body)
+        out.flush()
     }
 
     private fun jsonError(message: String) = JSONObject().put("ok", false).put("error", message)

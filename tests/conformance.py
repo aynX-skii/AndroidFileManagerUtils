@@ -364,6 +364,14 @@ def t_auth_reject_closes(ctx: Ctx) -> None:
 
 @case("§2.3 鉴权", "被拒之后连接确实断开，不会把 body 当新请求")
 def t_auth_reject_no_pipeline_garbage(ctx: Ctx) -> None:
+    """
+    要挡住的是「剩下的请求体被当成流水线里的下一个请求」——那会冒出一串
+    莫名其妙的 400，甚至真的执行掉 body 里那个 delete。
+
+    连接怎么断不重要：服务端关一个接收缓冲区里还压着未读数据的 socket 时，
+    内核发的是 RST 而不是 FIN，这本来就是时序相关的。FIN 和 RST 都算通过，
+    唯一不能出现的是**又一个 HTTP 响应**。
+    """
     body = b"POST /api/delete?path=%2F HTTP/1.1\r\nHost: x\r\n\r\n" * 4
     with ctx.conn() as c:
         c.request("POST", "/api/upload?name=x.bin", body=body)
@@ -372,9 +380,14 @@ def t_auth_reject_no_pipeline_garbage(ctx: Ctx) -> None:
         c.sock.settimeout(3.0)
         try:
             extra = c.sock.recv(4096)
+        except ConnectionResetError:
+            return  # RST：连接没了，body 没被解析，正是我们要的
         except socket.timeout:
             raise AssertionError("服务端既没断开也没再回应；请求体大概被挂起了")
-        expect_eq(extra, b"", f"401 之后不应再有任何响应，实到 {extra[:80]!r}")
+        expect(
+            b"HTTP/1." not in extra,
+            f"401 之后又冒出了 HTTP 响应，说明剩下的 body 被当成新请求解析了: {extra[:120]!r}",
+        )
 
 
 # ------------------------------------------------------------------ §3.1 info
@@ -1047,6 +1060,51 @@ def t_pair_needs_token(ctx: Ctx) -> None:
 
 
 # ------------------------------------------------------------- §3.7 浏览器页
+
+
+@case("§2.2 退避", "连续猜错 token 触发 429 + Retry-After，成功后清零")
+def t_auth_backoff(ctx: Ctx) -> None:
+    """
+    规范 §2.2「失败退避」。**故意放在最后**：它会把本机地址短暂封禁，
+    别的用例插在后面会被误伤。
+
+    只惩罚**连续**失败，所以前面那些穿插着成功请求的用例不会累积计数。
+    """
+    bad = "x" * len(ctx.token)
+    seen_429 = None
+    # 宽限 5 次，第 6 次开始封。多打几次以防前面残留了计数。
+    for i in range(1, 10):
+        with ctx.conn() as c:
+            c.request("GET", "/api/info", token=bad)
+            r = c.read_response()
+        if r.status == 429:
+            seen_429 = r
+            break
+        expect_eq(r.status, 401, f"第 {i} 次错 token 应回 401")
+
+    expect(seen_429 is not None, "连打 9 次错误 token 都没有任何退避（§2.2）")
+    retry = seen_429.header("retry-after")
+    expect(retry is not None, "429 缺 Retry-After 头")
+    wait = int(retry)
+    expect(1 <= wait <= 60, f"Retry-After 应在 1..60 秒，实到 {wait}")
+    expect_eq((seen_429.json or {}).get("ok"), False, "429 响应体的 ok")
+
+    # 封禁期内即使拿对的 token 也应该被挡住 —— 门都进不去，不比对
+    with ctx.conn() as c:
+        c.request("GET", "/api/info", token=ctx.token)
+        blocked = c.read_response()
+    expect_eq(blocked.status, 429, "封禁期内正确的 token 也应回 429，而不是放行")
+
+    time.sleep(wait + 0.5)
+    after = ctx.get("/api/info")
+    expect_eq(after.status, 200, f"等满 Retry-After={wait}s 之后仍未放行")
+
+    # 成功之后计数应归零：再错一次必须是 401，不是立刻又被封
+    with ctx.conn() as c:
+        c.request("GET", "/api/info", token=bad)
+        again = c.read_response()
+    expect_eq(again.status, 401, "成功校验之后计数没有清零（§2.2「成功即清零」）")
+    ctx.get("/api/info")  # 收尾：把刚才那一次失败也清掉
 
 
 @case("§3.7 根路径", "GET / 免鉴权且有响应")
