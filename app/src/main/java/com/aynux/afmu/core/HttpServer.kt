@@ -84,10 +84,18 @@ class HttpServer(
         }
         val trust = Tls.PinningTrustManager(
             isAllowed = { fp -> store.isPaired(fp) },
-            // Guest mode lets an unpaired client past the handshake and on to the password
-            // check. Read per-connection, not captured, so flipping the switch takes effect
-            // on the next connection instead of the next restart.
-            allowUnpairedClient = { prefs.guestModeActive },
+            // An unpaired client may finish the handshake when there is something for it to
+            // do afterwards, and only then:
+            //   · pairing — it has a certificate and wants to become paired (§4.2.4);
+            //   · guest mode — it can try the password.
+            // **The handshake is not where that gets decided.** route() lets an unpaired
+            // connection touch nothing but /api/pair-v2, the same shape as the Linux side.
+            // Refusing here instead would make pairing impossible: the request that starts a
+            // pairing arrives on a connection that is, by definition, not paired yet.
+            //
+            // Read per-connection rather than captured, so flipping a switch takes effect on
+            // the next connection instead of the next restart.
+            allowUnpairedClient = { prefs.allowAuthRequests || prefs.guestModeActive },
         )
         val factory = Tls.socketFactory(identity, trust)
         if (factory == null) {
@@ -164,6 +172,18 @@ class HttpServer(
          * top would carry v1's weakness — one long-lived shared secret — into v2.
          */
         val pairedPeer: String = "",
+        /**
+         * This connection is TLS. Distinct from [pairedPeer] being set: an encrypted guest
+         * connection is TLS but unpaired, and that combination is exactly what /api/pair-v2
+         * runs on.
+         */
+        val isTls: Boolean = false,
+        /**
+         * The peer's fingerprint from the handshake, **paired or not**. [pairedPeer] is only
+         * set for peers already in the table; pairing is precisely the case where we have a
+         * certificate and no entry for it yet.
+         */
+        val tlsPeerFp: String = "",
     ) {
         val contentLength: Long get() = headers["content-length"]?.toLongOrNull() ?: -1L
         val isChunked: Boolean get() = headers["transfer-encoding"]?.contains("chunked", true) == true
@@ -194,6 +214,7 @@ class HttpServer(
 
         var socket = raw
         var pairedPeer = ""
+        var tlsPeerFp = ""
 
         val factory = tlsFactory
         if (factory == null && !prefs.allowLegacyPlaintext) {
@@ -232,12 +253,21 @@ class HttpServer(
             }.getOrNull()
             val fp = Tls.fingerprintOf(leaf)
 
+            tlsPeerFp = fp
             if (fp.isNotEmpty() && peers?.isPaired(fp) == true) {
                 pairedPeer = fp
                 // A completed v2 connection is proof this peer speaks v2; from here on it is
                 // never allowed back to plaintext (draft §8.2 stage 2).
                 peers.setPinned(fp, true)
                 log("$remoteHost connected over an encrypted link")
+            } else if (fp.isNotEmpty() && prefs.allowAuthRequests) {
+                // Has a certificate, is not in the table: a pairing candidate (§4.2.4). It
+                // stays unpaired for the whole connection, and route() lets it touch nothing
+                // but /api/pair-v2. This branch has to exist — the request that *starts* a
+                // pairing necessarily arrives unpaired.
+                pairedPeer = ""
+                log("An unpaired device connected; pairing is all it can reach. " +
+                    "Fingerprint ${Base32.group(fp)}")
             } else if (prefs.guestModeActive) {
                 // Encrypted, but we have no idea who this is — a browser, most likely, since
                 // browsers never present a client certificate. It stays unpaired for the rest
@@ -279,8 +309,11 @@ class HttpServer(
             val queryStart = target.indexOf('?')
             val rawPath = if (queryStart < 0) target else target.substring(0, queryStart)
             val query = if (queryStart < 0) emptyMap() else parseQuery(target.substring(queryStart + 1))
-            val request =
-                Request(method, decode(rawPath), query, headers, input, remoteHost, pairedPeer)
+            val request = Request(
+                method, decode(rawPath), query, headers, input, remoteHost, pairedPeer,
+                isTls = socket !== raw,
+                tlsPeerFp = tlsPeerFp,
+            )
 
             try {
                 route(request, out)
@@ -348,6 +381,27 @@ class HttpServer(
             sendText(out, "404 Not Found", "text/plain", "no such route", true)
             return
         }
+        // An unpinned v2 connection has exactly one road open (v2 §4.2.4). This has to sit
+        // ahead of every other route — "pairing is all it can reach" is precisely the claim.
+        //
+        // The one exception is guest mode, where it may carry on to the v1 password check.
+        // That is not a wider door: a plaintext connection already goes through that same
+        // door, and guest mode only lets this one be encrypted too.
+        if (req.isTls && req.pairedPeer.isEmpty()) {
+            if (req.path == "/api/pair-v2") {
+                handlePairV2(req, out)
+                return
+            }
+            if (!prefs.guestModeActive) {
+                drainBody(req)
+                sendJson(
+                    out, "403 Forbidden",
+                    jsonError("not paired; only /api/pair-v2 is available"), false,
+                )
+                return
+            }
+        }
+
         // Guest mode off means the password route does not exist at all (§7/§9).
         //
         // /api/authorize is blocked with it: its whole job is to hand out a token, and that
@@ -400,6 +454,13 @@ class HttpServer(
         AuthThrottle.noteSuccess(req.remoteHost)
 
         when (req.path) {
+            // Routed here as well as in the unpaired gate above, on purpose. The moment the
+            // user taps Allow the peer *becomes* paired, so its next poll arrives on a paired
+            // connection — and if that only reached the gate above, the poll would 404 and the
+            // initiator would report a timeout for a pairing that actually succeeded. Whether
+            // that happens depends on whether the client reused its connection, which is not
+            // something either end should be relying on.
+            "/api/pair-v2" -> handlePairV2(req, out)
             "/api/pair" -> handlePair(req, out)
             "/api/ticket" -> handleTicket(req, out)
             "/api/info" -> handleInfo(out)
@@ -446,6 +507,135 @@ class HttpServer(
      * (PROTOCOL.md §3.8). The token is handed over only once the user has tapped Allow, and
      * only to whoever holds the id — which was given to the requester alone.
      */
+    /**
+     * The v2 pairing handshake (PROTOCOL.md v2 §4.2.3): three steps over an encrypted but
+     * not-yet-pinned connection.
+     *
+     *   POST ?step=commit  → { session, nb }      the peer locks in SHA-256(n_a), we answer n_b
+     *   POST ?step=reveal  → { sas }              the peer reveals n_a; both ends can now
+     *                                             compute the compare code
+     *   GET  ?session=…    → { status, … }        poll until the user here decides
+     *
+     * The peer's identity comes from the **handshake**, never from the request body. A name
+     * in the request is decoration; the fingerprint is the thing being authorised.
+     */
+    private fun handlePairV2(req: Request, out: OutputStream) {
+        val identity = Identity.ensure(log)
+        if (identity == null) {
+            drainBody(req)
+            sendJson(out, "500 Internal Server Error", jsonError("no local identity"), false)
+            return
+        }
+        // The fingerprint of whoever is on the other end of *this* connection. Empty means an
+        // anonymous guest (a browser), which has no identity to pair.
+        val peerFp = req.pairedPeer.ifEmpty { req.tlsPeerFp }
+        if (req.method == "GET") {
+            val session = req.query["session"].orEmpty()
+            val found = AuthRequests.status(session)
+            if (found == null || !found.isPairing) {
+                drainBody(req)
+                // The client must read 404 as "expired", not as a network blip to retry.
+                sendJson(out, "404 Not Found", jsonError("unknown or expired session"), true)
+                return
+            }
+            val body = JSONObject().put("ok", true)
+            when (found.status) {
+                AuthRequests.Status.PENDING -> body.put("status", "pending")
+                AuthRequests.Status.DENIED -> body.put("status", "denied")
+                AuthRequests.Status.EXPIRED -> body.put("status", "expired")
+                AuthRequests.Status.GRANTED -> {
+                    body.put("status", "granted")
+                        .put("name", prefs.deviceName)
+                        .put("os", "android")
+                        .put("port", port)
+                    // **No token in this response.** A v2 identity is the key pair; there is
+                    // nothing to hand over.
+                }
+            }
+            drainBody(req)
+            sendJson(out, "200 OK", body, true)
+            return
+        }
+
+        if (req.method != "POST" && req.method != "PUT") {
+            drainBody(req)
+            sendJson(out, "405 Method Not Allowed", jsonError("method not allowed"), true)
+            return
+        }
+
+        when (req.query["step"].orEmpty()) {
+            "commit" -> {
+                val commit = Hex.decode(req.query["commit"].orEmpty())
+                if (commit.size != 32) {
+                    drainBody(req)
+                    sendJson(out, "400 Bad Request", jsonError("commit must be 32 bytes of hex"), true)
+                    return
+                }
+                if (peerFp.isEmpty()) {
+                    drainBody(req)
+                    sendJson(
+                        out, "400 Bad Request",
+                        jsonError("this connection has no client certificate to pair"), true,
+                    )
+                    return
+                }
+                val request = AuthRequests.createPairing(
+                    prefs, req.query["name"].orEmpty(), req.query["os"].orEmpty(),
+                    req.remoteHost, peerFp, commit,
+                )
+                drainBody(req)
+                if (request == null) {
+                    val wait = AuthRequests.retryAfterSec(req.remoteHost)
+                    sendRetryAfter(out, wait)
+                    return
+                }
+                log("${request.name} (${request.host}) asked to pair")
+                sendJson(
+                    out, "200 OK",
+                    JSONObject()
+                        .put("ok", true)
+                        .put("session", request.id)
+                        .put("nb", Hex.encode(request.nonceB))
+                        .put("expires", ProtocolConstants.AUTH_TIMEOUT_SEC),
+                    true,
+                )
+            }
+
+            "reveal" -> {
+                val nonceA = Hex.decode(req.query["na"].orEmpty())
+                val sas = AuthRequests.revealPairing(
+                    req.query["session"].orEmpty(), nonceA, identity.fingerprint,
+                )
+                drainBody(req)
+                if (sas == null) {
+                    // Bad commit, unknown session, wrong length — all one answer. Telling the
+                    // caller which step it got wrong is telling it what to fix.
+                    sendJson(
+                        out, "400 Bad Request",
+                        jsonError("commit does not match, or unknown session"), true,
+                    )
+                    return
+                }
+                sendJson(
+                    out, "200 OK",
+                    JSONObject()
+                        .put("ok", true)
+                        // Echoed **only** so the initiator can self-check that both ends agree.
+                        // The initiator must display the code it computed itself — showing this
+                        // one means a man in the middle just sends back the string you hoped for.
+                        .put("sas", sas)
+                        .put("expires", ProtocolConstants.AUTH_TIMEOUT_SEC),
+                    true,
+                )
+            }
+
+            else -> {
+                drainBody(req)
+                sendJson(out, "400 Bad Request", jsonError("unknown step"), true)
+            }
+        }
+    }
+
     private fun handleAuthorize(req: Request, out: OutputStream) {
         when (req.method) {
             "POST", "PUT" -> {

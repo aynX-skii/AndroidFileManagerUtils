@@ -101,9 +101,10 @@ object Tls {
     class PinningTrustManager(
         private val isAllowed: (String) -> Boolean,
         /**
-         * Guest mode (§9): let an unpaired **client** finish the handshake, so it can go on to
-         * the password check. Never applies to servers we dial — there, an unpaired peer is
-         * the man in the middle we are looking for.
+         * Let an unpaired **client** finish the handshake, so it can go on to whatever the
+         * route layer allows it — pairing (§4.2.4) or the guest password check (§9). Never
+         * applies to servers we dial: there, an unpaired peer is the man in the middle we are
+         * looking for, and there is no later gate to catch it.
          *
          * Note this only covers a client that offers a certificate we do not know. A client
          * offering none never reaches a TrustManager at all under `wantClientAuth`, so who is
@@ -161,6 +162,82 @@ object Tls {
             if (client && allowUnpairedClient()) return
             throw CertificateException("fingerprint $fp is not paired")
         }
+    }
+
+    /**
+     * Records the server's fingerprint instead of checking it. **Pairing only.**
+     *
+     * There is nothing to pin against yet — finding out what to pin is what pairing is for
+     * (v2 §4.2.4). Two things make this safe, and it is unsafe the moment either stops
+     * holding:
+     *
+     *  - the peer in this state serves **only** `/api/pair-v2` and 403s everything else, so
+     *    the connection cannot do anything but pair;
+     *  - the protection against a man in the middle is the user comparing the SAS on both
+     *    screens, not the pinning.
+     *
+     * So this must never be used for anything but the first step of a pairing, and the
+     * fingerprint it records must be pinned for every step after it.
+     */
+    class RecordingTrustManager : X509ExtendedTrustManager() {
+
+        /** The server certificate seen on the connection this instance vetted. */
+        @Volatile
+        var serverFingerprint: String = ""
+            private set
+
+        override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) =
+            refuseClients()
+
+        override fun checkClientTrusted(
+            chain: Array<out X509Certificate>?, authType: String?, socket: Socket?,
+        ) = refuseClients()
+
+        override fun checkClientTrusted(
+            chain: Array<out X509Certificate>?, authType: String?, engine: SSLEngine?,
+        ) = refuseClients()
+
+        override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) =
+            record(chain)
+
+        override fun checkServerTrusted(
+            chain: Array<out X509Certificate>?, authType: String?, socket: Socket?,
+        ) = record(chain)
+
+        override fun checkServerTrusted(
+            chain: Array<out X509Certificate>?, authType: String?, engine: SSLEngine?,
+        ) = record(chain)
+
+        override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
+
+        /**
+         * This manager exists for one outbound pairing connection. Being asked to vet a
+         * *client* means it was installed on a server socket, where "accept anyone" is
+         * exactly the hole v2 exists to close.
+         */
+        private fun refuseClients(): Unit =
+            throw CertificateException("the pairing trust manager must not be used server-side")
+
+        private fun record(chain: Array<out X509Certificate>?) {
+            val leaf = chain?.firstOrNull()
+                ?: throw CertificateException("peer presented no certificate")
+            val fp = fingerprintOf(leaf)
+            if (fp.isEmpty()) throw CertificateException("cannot compute the peer's fingerprint")
+            serverFingerprint = fp
+        }
+    }
+
+    /** The factory for that first pairing request. See [RecordingTrustManager]. */
+    fun pairingFactory(
+        identity: Identity.Info?,
+        trust: RecordingTrustManager,
+    ): SSLSocketFactory? {
+        val info = identity ?: return null
+        return runCatching {
+            SSLContext.getInstance("TLSv1.3").apply {
+                init(arrayOf(IdentityKeyManager(info)), arrayOf(trust), null)
+            }.socketFactory
+        }.getOrNull()
     }
 
     /**

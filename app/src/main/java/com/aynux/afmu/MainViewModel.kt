@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.aynux.afmu.core.AuthRequests
 import com.aynux.afmu.core.Bridge
 import com.aynux.afmu.core.Discovery
+import com.aynux.afmu.core.Hex
 import com.aynux.afmu.core.Identity
 import com.aynux.afmu.core.LocaleHelper
 import com.aynux.afmu.core.Base32
@@ -380,6 +381,26 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun approveAuth() {
         val request = _state.value.pendingAuth ?: return
+
+        if (request.isPairing) {
+            // v2: tapping allow **is** writing the peer's fingerprint into the pairing table —
+            // that is what opens the door (v2 §4.2.3). **No token leaves the device**; the
+            // identity is the key pair.
+            peerStore.upsert(
+                PeerRecord(
+                    fp = request.peerFp,
+                    name = request.name,
+                    os = request.os,
+                    lastHost = request.host,
+                    lastPort = request.port.takeIf { it > 0 } ?: Prefs.DEFAULT_PORT,
+                )
+            )
+            AuthRequests.decide(request.id, granted = true)
+            Bridge.log("Paired with ${request.name}, fingerprint ${Base32.group(request.peerFp)}")
+            _state.update { it.copy(message = str(R.string.msg_paired_with) + " " + request.name) }
+            return
+        }
+
         AuthRequests.decide(request.id, granted = true)
         Bridge.log("Allowed ${request.name} (${request.host}) to connect")
         _state.update { it.copy(message = str(R.string.msg_auth_allowed)) }
@@ -529,6 +550,69 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         authJob = viewModelScope.launch { pollPairingV2(peer, fp, session) }
     }
 
+    /**
+     * Encrypted pairing with a peer entered by hand — no QR involved (v2 §4.2.4).
+     *
+     * The difference from [applyPairingV2] is where the fingerprint comes from. A scan brings
+     * one along, so that connection is pinned from the first packet. Here there is nothing to
+     * pin yet: the first request records what the peer presented, and every step after it is
+     * pinned to that. **The only thing standing between this and a man in the middle is the
+     * user comparing the code on both screens** — which is exactly what the code is for, and
+     * why the peer refuses everything but `/api/pair-v2` until it is paired.
+     */
+    fun pairWithPeer(peer: Discovery.Peer) {
+        viewModelScope.launch {
+            val nonceA = ByteArray(32).also { SecureRandom().nextBytes(it) }
+            val commit = MessageDigest.getInstance("SHA-256").digest(nonceA)
+
+            val identity = withContext(Dispatchers.IO) { Identity.ensure() }
+            if (identity == null) {
+                _state.update { it.copy(message = str(R.string.msg_pair_no_identity)) }
+                return@launch
+            }
+
+            _state.update { it.copy(scanning = true) }
+            val outcome = withContext(Dispatchers.IO) {
+                runCatching {
+                    val (started, fp) = client.pairCommitUnpinned(
+                        peer.host, peer.port, commit.toHex(), prefs.deviceName,
+                    )
+                    val session = started.optString("session")
+                    val nonceB = started.optString("nb").fromHex()
+                    if (session.isEmpty() || nonceB.size != 32) return@runCatching null
+
+                    val revealed = client.pairReveal(peer.host, peer.port, fp, session, nonceA.toHex())
+
+                    // Ours, computed here. Theirs is only a cross-check for implementation
+                    // bugs — displaying the value they sent would let a man in the middle
+                    // hand back whichever string we were hoping for.
+                    val mine = PairSas.compute(
+                        identity.fingerprint, fp.toFingerprintBytes(), nonceA, nonceB,
+                    )
+                    if (mine == null || mine != revealed.optString("sas")) return@runCatching null
+                    Triple(fp, session, mine)
+                }.getOrNull()
+            }
+            _state.update { it.copy(scanning = false) }
+
+            if (outcome == null) {
+                _state.update { it.copy(message = str(R.string.msg_pair_failed)) }
+                Bridge.log("Encrypted pairing with ${peer.host} did not get past the compare code")
+                return@launch
+            }
+            val (fp, session, sas) = outcome
+
+            _state.update {
+                it.copy(outgoingAuth = OutgoingAuth(peer, code = "", sending = false,
+                                                    sas = PairSas.format(sas)))
+            }
+            Bridge.log("Pairing compare code $sas — check it against their screen")
+
+            authJob?.cancel()
+            authJob = viewModelScope.launch { pollPairingV2(peer, fp, session) }
+        }
+    }
+
     /** Waits for the other user to tap Allow, then records the pairing. */
     private suspend fun pollPairingV2(peer: Discovery.Peer, fp: String, session: String) {
         for (second in AuthRequests.TIMEOUT_SEC downTo 1) {
@@ -567,13 +651,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(outgoingAuth = null, message = str(R.string.msg_pair_timeout)) }
     }
 
-    private fun ByteArray.toHex() = joinToString("") { "%02x".format(it) }
+    private fun ByteArray.toHex() = Hex.encode(this)
 
-    private fun String.fromHex(): ByteArray =
-        if (length % 2 != 0) ByteArray(0)
-        else runCatching {
-            ByteArray(length / 2) { substring(it * 2, it * 2 + 2).toInt(16).toByte() }
-        }.getOrDefault(ByteArray(0))
+    private fun String.fromHex(): ByteArray = Hex.decode(this)
 
     private fun String.toFingerprintBytes(): ByteArray = Base32.decode(this) ?: ByteArray(0)
 

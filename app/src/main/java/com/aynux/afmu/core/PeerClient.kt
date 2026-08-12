@@ -258,6 +258,46 @@ class PeerClient(private val context: Context) {
         mapOf("step" to "commit", "commit" to commitHex, "name" to selfName, "os" to "android"),
     ).readJson()
 
+    /**
+     * Step 1 against a peer whose fingerprint we do not know yet — the typed-address path,
+     * where no QR authenticated anything out of band.
+     *
+     * Returns the reply **and** the fingerprint the server presented. Every later step pins to
+     * that value: this connection is unpinned, the rest of the pairing must not be. What stops
+     * a man in the middle here is the user comparing the SAS on both screens, and that only
+     * works because the peer in this state serves nothing but `/api/pair-v2`.
+     */
+    fun pairCommitUnpinned(
+        host: String,
+        port: Int,
+        commitHex: String,
+        selfName: String,
+    ): Pair<JSONObject, String> {
+        val identity = Identity.ensure() ?: throw IOException("this device has no usable identity")
+        val trust = Tls.RecordingTrustManager()
+        val factory = Tls.pairingFactory(identity, trust)
+            ?: throw IOException("this device has no usable identity")
+        val params = mapOf(
+            "step" to "commit", "commit" to commitHex, "name" to selfName, "os" to "android",
+        )
+        val query = params.entries.joinToString("&") { (k, v) -> "${encode(k)}=${encode(v)}" }
+        val url = URL("https://$host:$port/api/pair-v2?$query")
+        val connection = (url.openConnection() as HttpsURLConnection).apply {
+            sslSocketFactory = factory
+            hostnameVerifier = javax.net.ssl.HostnameVerifier { _, _ -> true }
+            requestMethod = "POST"
+            instanceFollowRedirects = false
+            connectTimeout = CONNECT_TIMEOUT
+            readTimeout = READ_TIMEOUT
+            setRequestProperty("Accept", "application/json")
+            setFixedLengthStreamingMode(0)
+        }
+        val body = connection.readJson()
+        val fp = trust.serverFingerprint
+        if (fp.isEmpty()) throw IOException("the peer presented no usable certificate")
+        return body to fp
+    }
+
     fun pairReveal(
         host: String,
         port: Int,

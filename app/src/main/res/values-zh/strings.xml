@@ -143,12 +143,17 @@
     <string name="auth_dialog_body">%1$s（%2$s）正在请求连接本机。</string>
     <string name="auth_dialog_code_hint">只有对方屏幕上显示的确认码与此相同时才点允许。</string>
     <string name="auth_dialog_grant_hint">允许即把本机的访问 token 交给对方；重新生成 token 可以随时收回。</string>
+    <string name="pair_dialog_title">要和这台设备配对吗？</string>
+    <string name="pair_dialog_body">%1$s（%2$s）想通过加密连接与本机配对。</string>
+    <string name="pair_dialog_code_hint">两边屏幕上的码必须一模一样，逐字符核对。不一样就拒绝 —— 中间有人。</string>
+    <string name="pair_dialog_grant_hint">允许之后这个指纹会写进配对表，从此它凭指纹连入。不会交出任何密码。</string>
     <string name="auth_allow">允许</string>
     <string name="auth_deny">拒绝</string>
     <string name="msg_auth_allowed">已允许连接</string>
 
     <!-- 主动请求对方授权（手机 ↔ 手机也靠这条） -->
     <string name="ask_to_connect">请求授权</string>
+    <string name="pair_encrypted">加密配对</string>
     <string name="outgoing_auth_title">等待对方允许</string>
     <string name="outgoing_auth_sending">正在发送请求…</string>
     <string name="outgoing_auth_body">已在 %1$s 上弹出提示，请到那台设备上点「允许」。</string>

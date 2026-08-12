@@ -33,9 +33,28 @@ object AuthRequests {
         val port: Int,
         val createdAt: Long,
         val status: Status = Status.PENDING,
+
+        // ---- v2 pairing (PROTOCOL.md v2 §4.2.3). All empty on a v1 request.
+        /** The peer's SPKI fingerprint, **taken from the handshake**, never from the request. */
+        val peerFp: String = "",
+        /** SHA-256(n_a), locked in before we reveal n_b. */
+        val commit: ByteArray = ByteArray(0),
+        val nonceA: ByteArray = ByteArray(0),
+        val nonceB: ByteArray = ByteArray(0),
+        /** The compare code, once step 2 has produced it. Empty before that. */
+        val sas: String = "",
     ) {
         fun expired(now: Long = System.currentTimeMillis()) =
             now - createdAt > TIMEOUT_MS
+
+        /** v2 requests carry a fingerprint; v1 ones never do. */
+        val isPairing: Boolean get() = peerFp.isNotEmpty()
+
+        // ByteArray in a data class compares by reference, and these are compared nowhere —
+        // spelling that out rather than leaving a trap for whoever adds the first ==.
+        override fun equals(other: Any?): Boolean = other is Request && other.id == id &&
+            other.status == status && other.sas == sas
+        override fun hashCode(): Int = id.hashCode() * 31 + status.hashCode()
     }
 
     /** The request awaiting a decision, or null. Drives both the notification and the dialog. */
@@ -80,6 +99,88 @@ object AuthRequests {
         )
         _pending.value = request
         return request
+    }
+
+    /**
+     * Step 1 of a v2 pairing: the peer commits to its nonce and we answer with ours
+     * (PROTOCOL.md v2 §4.2.3).
+     *
+     * Shares the single pending slot with [create] on purpose: counting them separately would
+     * let one of each raise two prompts at once, and "one at a time" is the whole point.
+     *
+     * [peerFp] comes from the completed handshake. **Nothing self-reported may be trusted
+     * here** — a name is cosmetic, a fingerprint is identity.
+     */
+    @Synchronized
+    fun createPairing(
+        prefs: Prefs,
+        name: String,
+        os: String,
+        host: String,
+        peerFp: String,
+        commit: ByteArray,
+    ): Request? {
+        if (!prefs.allowAuthRequests) return null
+        if (peerFp.isEmpty() || commit.size != 32) return null
+        sweep()
+        if (_pending.value != null) return null
+        val now = System.currentTimeMillis()
+        if (globalUntil > now) return null
+        if ((blocked[host] ?: 0) > now) return null
+
+        // Our nonce is minted after theirs is committed, but they cannot see it yet — the
+        // order does not matter, only that their choice is already locked (§4.2.2).
+        val nonceB = ByteArray(32).also { random.nextBytes(it) }
+
+        val request = Request(
+            id = newId(),
+            code = "",                       // v2 has no 4-digit code; the SAS replaces it
+            name = displayText(name, 64).ifBlank { host },
+            os = displayText(os, 16),
+            host = host,
+            port = 0,
+            createdAt = now,
+            peerFp = peerFp,
+            commit = commit,
+            nonceB = nonceB,
+        )
+        _pending.value = request
+        return request
+    }
+
+    /**
+     * Step 2: the peer reveals `n_a`.
+     *
+     * Checks `SHA-256(n_a) == commit`. A mismatch **voids the whole session** and returns
+     * null — no retry. Allowing one would let a peer keep trying different `n_a` values until
+     * a collision turns up, which is exactly what the commit exists to prevent.
+     *
+     * Returns the compare code both screens must show.
+     */
+    @Synchronized
+    fun revealPairing(id: String, nonceA: ByteArray, localFingerprint: ByteArray): String? {
+        sweep()
+        val current = _pending.value ?: return null
+        if (id.isEmpty() || current.id != id || !current.isPairing) return null
+        if (nonceA.size != 32) return null
+
+        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(nonceA)
+        if (!digest.contentEquals(current.commit)) {
+            _pending.value = null
+            return null
+        }
+
+        val peerRaw = Base32.decode(current.peerFp)
+        val sas = PairSas.compute(peerRaw ?: ByteArray(0), localFingerprint, nonceA, current.nonceB)
+        if (sas == null) {
+            // Nothing to compare means nothing to approve. Voiding the session beats raising a
+            // prompt with no code on it and hoping the user does not tap "allow" anyway.
+            _pending.value = null
+            return null
+        }
+
+        _pending.value = current.copy(nonceA = nonceA, sas = sas)
+        return sas
     }
 
     /**

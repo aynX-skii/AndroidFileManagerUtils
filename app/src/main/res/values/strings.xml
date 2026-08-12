@@ -146,12 +146,17 @@
     <string name="auth_dialog_body">%1$s (%2$s) is asking to connect to this phone.</string>
     <string name="auth_dialog_code_hint">Only allow if the other screen is showing this same code.</string>
     <string name="auth_dialog_grant_hint">Allowing hands over this phone\'s access token; it can be revoked by generating a new one.</string>
+    <string name="pair_dialog_title">Pair with this device?</string>
+    <string name="pair_dialog_body">%1$s (%2$s) wants to pair with this phone over an encrypted connection.</string>
+    <string name="pair_dialog_code_hint">Both screens must show this same code, character for character. If they differ, refuse — someone is in the middle.</string>
+    <string name="pair_dialog_grant_hint">Allowing adds this fingerprint to the pairing table, and that is what lets it in from now on. No password is handed over.</string>
     <string name="auth_allow">Allow</string>
     <string name="auth_deny">Deny</string>
     <string name="msg_auth_allowed">Connection allowed</string>
 
     <!-- Asking another device to approve us (this is also how phone-to-phone works) -->
     <string name="ask_to_connect">Ask to connect</string>
+    <string name="pair_encrypted">Pair (encrypted)</string>
     <string name="outgoing_auth_title">Waiting for approval</string>
     <string name="outgoing_auth_sending">Sending the request…</string>
     <string name="outgoing_auth_body">A prompt is showing on %1$s — tap Allow over there.</string>

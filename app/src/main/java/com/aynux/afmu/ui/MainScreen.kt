@@ -78,6 +78,7 @@ import com.aynux.afmu.MainViewModel
 import com.aynux.afmu.R
 import com.aynux.afmu.core.AuthRequests
 import com.aynux.afmu.core.Base32
+import com.aynux.afmu.core.PairSas
 import com.aynux.afmu.core.PeerRecord
 import com.aynux.afmu.core.Prefs
 import com.aynux.afmu.core.Discovery
@@ -144,11 +145,16 @@ fun MainScreen(
     // Also reachable from the notification shade; this is the version for when the app
     // already happens to be open.
     state.pendingAuth?.let { request ->
-        AuthRequestDialog(
-            request = request,
-            onAllow = { viewModel.approveAuth() },
-            onDeny = { viewModel.denyAuth() },
-        )
+        // A pairing that has not reached step 2 has no compare code yet. Asking "allow?" with
+        // nothing to compare is asking the user to guess, so wait for the reveal — the peer is
+        // mid-handshake and will get there in milliseconds or time out on its own.
+        if (!request.isPairing || request.sas.isNotEmpty()) {
+            AuthRequestDialog(
+                request = request,
+                onAllow = { viewModel.approveAuth() },
+                onDeny = { viewModel.denyAuth() },
+            )
+        }
     }
 
     state.outgoingAuth?.let { pending ->
@@ -174,31 +180,53 @@ private fun AuthRequestDialog(
     onAllow: () -> Unit,
     onDeny: () -> Unit,
 ) {
+    val pairing = request.isPairing
     AlertDialog(
         // Dismissing counts as denying. Silently leaving it pending would keep the PC
         // waiting on a prompt that is no longer on screen.
         onDismissRequest = onDeny,
-        title = { Text(stringResource(R.string.auth_dialog_title)) },
+        title = {
+            Text(stringResource(if (pairing) R.string.pair_dialog_title else R.string.auth_dialog_title))
+        },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    stringResource(R.string.auth_dialog_body, request.name, request.host),
+                    stringResource(
+                        if (pairing) R.string.pair_dialog_body else R.string.auth_dialog_body,
+                        request.name, request.host,
+                    ),
                     style = MaterialTheme.typography.bodyMedium,
                 )
+                // v2 shows the compare code; v1 shows the 4-digit confirmation code. They
+                // answer different questions — "is anyone in the middle" versus "is this the
+                // prompt I just triggered" — so they must not be dressed up as the same thing.
                 Text(
-                    request.code,
+                    if (pairing) PairSas.format(request.sas) else request.code,
                     style = MaterialTheme.typography.headlineMedium,
                     fontFamily = FontFamily.Monospace,
                     modifier = Modifier.fillMaxWidth(),
                     textAlign = TextAlign.Center,
                 )
                 Text(
-                    stringResource(R.string.auth_dialog_code_hint),
+                    stringResource(
+                        if (pairing) R.string.pair_dialog_code_hint else R.string.auth_dialog_code_hint
+                    ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                if (pairing) {
+                    Text(
+                        Base32.group(request.peerFp),
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Text(
-                    stringResource(R.string.auth_dialog_grant_hint),
+                    stringResource(
+                        if (pairing) R.string.pair_dialog_grant_hint
+                        else R.string.auth_dialog_grant_hint
+                    ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -448,8 +476,10 @@ private fun SendCard(
                 peer = peer,
                 selected = peer == state.selectedPeer,
                 canAsk = state.outgoingAuth == null,
+                paired = state.pairedPeers.any { it.lastHost == peer.host && it.lastPort == peer.port },
                 onSelect = { viewModel.selectPeer(peer) },
                 onAsk = { viewModel.requestAuthorization(peer) },
+                onPair = { viewModel.pairWithPeer(peer) },
             )
         }
 
@@ -504,8 +534,10 @@ private fun PeerRow(
     peer: Discovery.Peer,
     selected: Boolean,
     canAsk: Boolean,
+    paired: Boolean,
     onSelect: () -> Unit,
     onAsk: () -> Unit,
+    onPair: () -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -523,7 +555,16 @@ private fun PeerRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        // Nobody wants to read a token off another phone's screen and type it in here.
+        // Two ways in, and they are not the same thing:
+        //   · "Pair (encrypted)" is v2 — keys, a compare code, no password anywhere.
+        //   · "Ask to connect" is v1 — the peer hands over a token.
+        // Already-paired peers only get the second, and only because a v1 peer might still
+        // want it; offering to pair again with a device already in the table just confuses.
+        if (!paired) {
+            TextButton(onClick = onPair, enabled = canAsk) {
+                Text(stringResource(R.string.pair_encrypted))
+            }
+        }
         TextButton(onClick = onAsk, enabled = canAsk) {
             Text(stringResource(R.string.ask_to_connect))
         }
