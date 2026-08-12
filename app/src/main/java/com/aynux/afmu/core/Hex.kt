@@ -19,12 +19,30 @@ object Hex {
 
     fun decode(text: String): ByteArray {
         if (text.isEmpty() || text.length % 2 != 0) return ByteArray(0)
-        return runCatching {
-            ByteArray(text.length / 2) {
-                val hi = text[it * 2].digitToInt(16)
-                val lo = text[it * 2 + 1].digitToInt(16)
-                ((hi shl 4) or lo).toByte()
-            }
-        }.getOrDefault(ByteArray(0))
+        val out = ByteArray(text.length / 2)
+        for (i in out.indices) {
+            val hi = nibble(text[i * 2])
+            val lo = nibble(text[i * 2 + 1])
+            if (hi < 0 || lo < 0) return ByteArray(0)
+            out[i] = ((hi shl 4) or lo).toByte()
+        }
+        return out
+    }
+
+    /**
+     * ASCII `0-9a-fA-F` and nothing else; -1 for anything else.
+     *
+     * Written out rather than using `Char.digitToInt(16)`, which accepts **any Unicode decimal
+     * digit** — `١١` (Arabic-Indic) decodes to a real byte there. Nobody gains much from that
+     * on its own, but the two ends of this protocol have to agree on what a commit *is*, and
+     * Qt's `QByteArray::fromHex` silently **skips** characters it does not like rather than
+     * rejecting them. Three different answers to "is this valid hex" is how a handshake starts
+     * failing, or worse succeeding, for reasons nobody can reproduce.
+     */
+    private fun nibble(c: Char): Int = when (c) {
+        in '0'..'9' -> c - '0'
+        in 'a'..'f' -> c - 'a' + 10
+        in 'A'..'F' -> c - 'A' + 10
+        else -> -1
     }
 }
