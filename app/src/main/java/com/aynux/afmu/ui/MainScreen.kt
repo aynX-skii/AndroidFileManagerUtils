@@ -548,7 +548,21 @@ private fun PeerRow(
     ) {
         RadioButton(selected = selected, onClick = onSelect)
         Column(Modifier.weight(1f)) {
-            Text(peer.name, style = MaterialTheme.typography.bodyLarge)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(peer.name, style = MaterialTheme.typography.bodyLarge)
+                // The list mixes two sources now — devices that just answered a broadcast and
+                // devices from the pairing table. Which is which decides whether the traffic
+                // is encrypted, so it should not be something the user has to infer.
+                if (paired) {
+                    Spacer(Modifier.width(6.dp))
+                    Icon(
+                        Icons.Filled.Lock,
+                        contentDescription = stringResource(R.string.paired_encrypted_only),
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(14.dp),
+                    )
+                }
+            }
             Text(
                 "${peer.host}:${peer.port}  ·  ${peer.os}",
                 style = MaterialTheme.typography.bodySmall,

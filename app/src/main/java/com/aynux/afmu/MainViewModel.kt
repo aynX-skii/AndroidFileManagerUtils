@@ -214,11 +214,42 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             peerStore.peers.collect { paired ->
                 _state.update {
-                    it.copy(pairedPeers = paired, pairedDropped = peerStore.droppedOnLoad)
+                    // A paired device is a device you can send to, whether or not a broadcast
+                    // reached you. Plenty of networks eat UDP broadcast, and on those the
+                    // discovery list stays empty forever — leaving every "send" button greyed
+                    // out next to a pairing table that plainly lists the machine. The table is
+                    // what v2 means by "peers I can talk to"; the scan only adds strangers.
+                    it.copy(
+                        pairedPeers = paired,
+                        pairedDropped = peerStore.droppedOnLoad,
+                        peers = mergePeers(it.peers, paired.toPeers()),
+                    )
                 }
             }
         }
     }
+
+    /** Pairing records that carry a usable address, as peers you can pick and send to. */
+    private fun List<PeerRecord>.toPeers(): List<Discovery.Peer> = mapNotNull { r ->
+        if (r.lastHost.isBlank() || r.lastPort <= 0) null
+        else Discovery.Peer(
+            name = r.name.ifBlank { r.lastHost },
+            os = r.os.ifBlank { "unknown" },
+            host = r.lastHost,
+            port = r.lastPort,
+            fingerprint = r.fp,
+        )
+    }
+
+    /**
+     * Discovery wins on collisions: a live reply says where the device is *now*, while a
+     * pairing record only says where it was last seen.
+     */
+    private fun mergePeers(
+        discovered: List<Discovery.Peer>,
+        paired: List<Discovery.Peer>,
+    ): List<Discovery.Peer> =
+        (discovered + paired).distinctBy { "${it.host}:${it.port}" }
 
     /**
      * Forgets a pairing. There is no confirmation here — the UI asks first, because this
@@ -874,9 +905,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
         _state.update { it.copy(scanning = true) }
         val found = withContext(Dispatchers.IO) { Bridge.probePeers(prefs, peerStore) }
-        val peer = found.firstOrNull { "${it.host}:${it.port}" == prefs.lastPeer }
-            ?: found.firstOrNull()
-        _state.update { it.copy(scanning = false, peers = found, selectedPeer = peer) }
+        // Nothing answered does not mean there is nobody: broadcast is filtered on plenty of
+        // networks, and a paired device's stored address usually still works.
+        val candidates = mergePeers(found, _state.value.pairedPeers.toPeers())
+        val peer = candidates.firstOrNull { "${it.host}:${it.port}" == prefs.lastPeer }
+            ?: candidates.firstOrNull()
+        _state.update { it.copy(scanning = false, peers = candidates, selectedPeer = peer) }
 
         if (peer == null) {
             _state.update {
