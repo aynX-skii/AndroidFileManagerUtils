@@ -21,6 +21,13 @@ import java.security.SecureRandom
  */
 object AuthRequests {
 
+    // The entry points take the "are requests allowed" flag rather than [Prefs] itself. One
+    // boolean is all this class ever wanted from it, and depending on the whole settings
+    // object would drag a Context in — which would put the commit-reveal logic, the one piece
+    // here that stands between a user and a man in the middle, out of reach of a plain JVM
+    // test. It is worth a slightly longer call site.
+
+
     enum class Status { PENDING, GRANTED, DENIED, EXPIRED }
 
     data class Request(
@@ -80,8 +87,15 @@ object AuthRequests {
      * the penalty box, the global cooldown is running, or requests are switched off.
      */
     @Synchronized
-    fun create(prefs: Prefs, name: String, os: String, host: String, port: Int, code: String): Request? {
-        if (!prefs.allowAuthRequests) return null
+    fun create(
+        allowRequests: Boolean,
+        name: String,
+        os: String,
+        host: String,
+        port: Int,
+        code: String,
+    ): Request? {
+        if (!allowRequests) return null
         sweep()
         if (_pending.value != null) return null
         val now = System.currentTimeMillis()
@@ -113,14 +127,14 @@ object AuthRequests {
      */
     @Synchronized
     fun createPairing(
-        prefs: Prefs,
+        allowRequests: Boolean,
         name: String,
         os: String,
         host: String,
         peerFp: String,
         commit: ByteArray,
     ): Request? {
-        if (!prefs.allowAuthRequests) return null
+        if (!allowRequests) return null
         if (peerFp.isEmpty() || commit.size != 32) return null
         sweep()
         if (_pending.value != null) return null

@@ -580,7 +580,8 @@ class HttpServer(
                     return
                 }
                 val request = AuthRequests.createPairing(
-                    prefs, req.query["name"].orEmpty(), req.query["os"].orEmpty(),
+                    prefs.allowAuthRequests,
+                    req.query["name"].orEmpty(), req.query["os"].orEmpty(),
                     req.remoteHost, peerFp, commit,
                 )
                 drainBody(req)
@@ -645,7 +646,7 @@ class HttpServer(
                     return
                 }
                 val request = AuthRequests.create(
-                    prefs = prefs,
+                    allowRequests = prefs.allowAuthRequests,
                     name = req.query["name"].orEmpty(),
                     os = req.query["os"].orEmpty(),
                     host = req.remoteHost,
