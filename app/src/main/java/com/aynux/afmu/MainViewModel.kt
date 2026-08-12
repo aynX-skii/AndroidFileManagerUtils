@@ -735,10 +735,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun addPeerManually(hostPort: String) {
         val host = hostPort.substringBefore(':').trim()
         if (host.isEmpty()) return
-        val port = hostPort.substringAfter(':', "").toIntOrNull() ?: Prefs.DEFAULT_PORT
+        val typedPort = hostPort.substringAfter(':', "").toIntOrNull()
+        val port = typedPort ?: Prefs.DEFAULT_PORT
         viewModelScope.launch {
             val peer = withContext(Dispatchers.IO) {
-                Discovery(prefs, peerStore).probeHost(host) ?: Discovery.Peer(host, "linux", host, port)
+                val probed = Discovery(prefs, peerStore).probeHost(host)
+                when {
+                    probed == null -> Discovery.Peer(host, "linux", host, port)
+                    // A typed port wins over the discovery reply. The probe is a convenience —
+                    // it fills in the name and the port when the user gave neither. Letting it
+                    // overwrite a port the user typed produces "I entered :9765 and it connected
+                    // to :8765", with nothing on screen admitting the substitution.
+                    typedPort != null -> probed.copy(port = typedPort)
+                    else -> probed
+                }
             }
             _state.update {
                 it.copy(peers = (it.peers + peer).distinctBy { p -> "${p.host}:${p.port}" })
@@ -764,7 +774,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (uris.isEmpty()) return
         viewModelScope.launch {
             val target = resolvePeer() ?: return@launch
-            if (!peerTokenReady()) return@launch
+            if (!peerAuthReady(target)) return@launch
             // One at a time, for the same reason downloads are serial: sharing a few
             // hundred photos would otherwise open that many simultaneous connections,
             // and the peer spawns a thread per connection.
@@ -795,7 +805,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return peer
     }
 
-    private fun peerTokenReady(): Boolean {
+    /**
+     * Do we have any way to authenticate to [peer]?
+     *
+     * A paired peer needs **no token at all** — the handshake against a pinned key is the
+     * authentication (PROTOCOL.md v2 §5.2), and asking for one here would make v2 strictly
+     * harder to use than v1: the user would be told to type a password that the other end
+     * has stopped accepting.
+     */
+    private fun peerAuthReady(peer: Discovery.Peer): Boolean {
+        if (peerStore.findByAddressHint(peer.host, peer.port) != null) return true
         if (_state.value.peerToken.isNotBlank()) return true
         _state.update { it.copy(message = str(R.string.msg_enter_pc_token)) }
         return false
@@ -832,7 +851,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (_state.value.browse != null) return
         viewModelScope.launch {
             val peer = resolvePeer() ?: return@launch
-            if (!peerTokenReady()) return@launch
+            if (!peerAuthReady(peer)) return@launch
             _state.update { it.copy(browse = RemoteBrowse(peer = peer)) }
             loadRemote("/")
         }

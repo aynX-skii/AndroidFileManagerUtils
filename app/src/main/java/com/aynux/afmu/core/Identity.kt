@@ -11,6 +11,7 @@ import java.security.KeyPairGenerator
 import java.security.KeyStore
 import java.security.MessageDigest
 import java.security.PrivateKey
+import java.security.Signature
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
 import java.util.Calendar
@@ -73,14 +74,27 @@ object Identity {
      * paired devices stopped working" with nothing to point at.
      */
     @Synchronized
-    fun ensure(): Info? {
+    fun ensure(log: (String) -> Unit = {}): Info? {
         cached?.let { return it }
 
-        val store = KeyStore.getInstance(KEYSTORE).apply { load(null) }
+        var store = KeyStore.getInstance(KEYSTORE).apply { load(null) }
         val existing = runCatching { load(store) }.getOrNull()
         if (existing != null) {
-            cached = existing
-            return existing
+            if (canSignForTls(existing.privateKey)) {
+                cached = existing
+                return existing
+            }
+            // The key loads, the fingerprint displays, everything looks healthy — and every
+            // handshake fails. See [canSignForTls]. Replacing it is not the silent key swap
+            // the doc comment forbids: a key that cannot sign has never completed a handshake,
+            // so no pairing can exist that depends on it. Say so loudly all the same.
+            log(
+                "The stored device identity cannot sign for TLS (an early build restricted it " +
+                    "to SHA-256). Generating a replacement — any device paired against the old " +
+                    "fingerprint has to pair again."
+            )
+            runCatching { store.deleteEntry(ALIAS) }
+            store = KeyStore.getInstance(KEYSTORE).apply { load(null) }
         }
         // Nothing usable there yet. If an entry exists but is broken we deliberately do not
         // wipe it: that would be the silent key swap described above.
@@ -91,6 +105,27 @@ object Identity {
             .getOrNull()
         return cached
     }
+
+    /**
+     * Can this key actually do the one thing TLS needs of it?
+     *
+     * TLS 1.3 hashes the handshake transcript itself and then asks the key for a raw ECDSA
+     * signature over those 32 bytes — `NONEwithECDSA`. A key generated without
+     * `KeyProperties.DIGEST_NONE` refuses with KeyMint `INCOMPATIBLE_DIGEST`, and the failure
+     * surfaces four layers up as `SSLHandshakeException: I/O error during system call` on a
+     * connection that looks fine from every other angle: the key loads, the certificate parses,
+     * the fingerprint displays. Nothing points at the key.
+     *
+     * One signature at startup turns that into a sentence someone can act on.
+     */
+    private fun canSignForTls(key: PrivateKey): Boolean = runCatching {
+        Signature.getInstance("NONEwithECDSA").run {
+            initSign(key)
+            update(ByteArray(32))          // 一个 SHA-256 那么长的摘要，内容无所谓
+            sign()
+        }
+        true
+    }.getOrElse { false }
 
     private fun load(store: KeyStore): Info? {
         val key = store.getKey(ALIAS, null) as? PrivateKey ?: return null
@@ -150,7 +185,13 @@ object Identity {
             KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY,
         )
             .setAlgorithmParameterSpec(java.security.spec.ECGenParameterSpec(ProtocolConstants.IDENTITY_CURVE))
-            .setDigests(KeyProperties.DIGEST_SHA256)
+            // DIGEST_NONE is required, not optional, and its absence is invisible until a
+            // real handshake: TLS 1.3 hashes the transcript itself and then asks the key for a
+            // raw ECDSA signature over those 32 bytes — `NONEwithECDSA`. A key restricted to
+            // SHA-256 refuses that with KeyMint INCOMPATIBLE_DIGEST, the handshake dies with
+            // a generic "I/O error during system call", and everything else about the identity
+            // looks perfectly healthy. SHA-256 stays for the self-signed certificate.
+            .setDigests(KeyProperties.DIGEST_NONE, KeyProperties.DIGEST_SHA256)
             // The subject is a placeholder on purpose. Pinning is on the public key, so the
             // name changes nothing about security — and putting the device name here would
             // print it into the pairing table and the logs for no benefit.

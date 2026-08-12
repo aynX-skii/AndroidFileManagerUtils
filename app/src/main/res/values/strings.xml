@@ -85,7 +85,7 @@
 
     <!-- 已配对设备（协议 v2 的配对表） -->
     <string name="paired_devices">Paired devices</string>
-    <string name="paired_none">No paired devices yet. Once encrypted connections (protocol v2) are on, devices you pair with appear here.</string>
+    <string name="paired_none">No paired devices yet. Scan a code, and devices you pair with appear here.</string>
     <string name="paired_no_expiry">Pairings never expire on their own — a device you have not used in months still connects. Clearing one is manual, here.</string>
     <string name="paired_dropped">%1$d stored entries were unusable and have been ignored.</string>
     <string name="paired_unnamed">Unnamed device</string>

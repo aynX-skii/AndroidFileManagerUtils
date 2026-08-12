@@ -77,7 +77,7 @@ class HttpServer(
         // both at once. The toggle is the whole decision.
         if (prefs.allowLegacyPlaintext) return
         val store = peers ?: return
-        val identity = Identity.ensure()
+        val identity = Identity.ensure(log)
         if (identity == null) {
             log("No usable device identity — encrypted connections are unavailable")
             return
@@ -204,7 +204,10 @@ class HttpServer(
                 // *here*, before a single request has been read, let alone answered.
                 ssl.startHandshake()
             } catch (e: Exception) {
-                log("Refused an encrypted connection from $remoteHost: ${e.message}")
+                // The whole cause chain, not just the top message. A failed handshake reports
+                // itself as "the peer went away" from both ends, and the message alone never
+                // says which side actually gave up or why — the cause underneath does.
+                log("Refused an encrypted connection from $remoteHost: ${describe(e)}")
                 return
             }
 
@@ -285,6 +288,17 @@ class HttpServer(
             val clientWantsClose = headers["connection"].equals("close", ignoreCase = true)
             if (clientWantsClose || (request.hasBody && !request.bodyConsumed)) return
         }
+    }
+
+    /** Exception plus its cause chain, one line — see the handshake catch above. */
+    private fun describe(e: Throwable): String {
+        val parts = ArrayList<String>()
+        var cur: Throwable? = e
+        while (cur != null && parts.size < 5) {
+            parts.add("${cur::class.java.simpleName}: ${cur.message}")
+            cur = cur.cause.takeIf { it !== cur }
+        }
+        return parts.joinToString(" <- ")
     }
 
     private fun route(req: Request, out: OutputStream) {

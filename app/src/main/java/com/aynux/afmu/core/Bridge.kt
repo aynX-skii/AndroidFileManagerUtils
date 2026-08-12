@@ -56,7 +56,7 @@ object Bridge {
         // the table to recognise the replies it hears. Minting touches the keystore, so this
         // may be null on a device where that failed — discovery then behaves exactly as in v1
         // rather than refusing to start.
-        val identityFp = runCatching { Identity.ensure()?.fingerprint }.getOrNull()
+        val identityFp = runCatching { Identity.ensure { log(it) }?.fingerprint }.getOrNull()
         val responder = Discovery(prefs, peers, identityFp) { log(it) }
         runCatching { responder.start { server?.port ?: 0 } }
             .onFailure { log("Discovery unavailable: ${it.message}") }
