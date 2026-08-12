@@ -134,6 +134,7 @@ object AuthRequests {
         host: String,
         peerFp: String,
         commit: ByteArray,
+        port: Int = 0,
     ): Request? {
         if (!allowRequests) return null
         if (peerFp.isEmpty() || commit.size != 32) return null
@@ -153,7 +154,7 @@ object AuthRequests {
             name = displayText(name, 64).ifBlank { host },
             os = displayText(os, 16),
             host = host,
-            port = 0,
+            port = port,
             createdAt = now,
             peerFp = peerFp,
             commit = commit,
@@ -223,6 +224,35 @@ object AuthRequests {
         }
         sweep()
         return answer
+    }
+
+    /**
+     * Approve the pending request, doing everything approval means.
+     *
+     * For a v2 pairing that includes **writing the fingerprint into [peers]** — that write is
+     * the act that opens the door, not a side effect of it. It lives here because there is
+     * more than one way to approve (the dialog, the notification shade) and they drifted:
+     * the notification called [decide] alone, so approving from the shade left the initiator
+     * believing it was paired while this device went on refusing it.
+     *
+     * Returns the request that was approved, or null if there was nothing pending under [id].
+     */
+    @Synchronized
+    fun approve(id: String, peers: PeerStore): Request? {
+        val request = _pending.value?.takeIf { it.id == id } ?: return null
+        if (request.isPairing) {
+            peers.upsert(
+                PeerRecord(
+                    fp = request.peerFp,
+                    name = request.name,
+                    os = request.os,
+                    lastHost = request.host,
+                    lastPort = request.port.takeIf { it > 0 } ?: Prefs.DEFAULT_PORT,
+                )
+            )
+        }
+        decide(id, granted = true)
+        return request
     }
 
     @Synchronized

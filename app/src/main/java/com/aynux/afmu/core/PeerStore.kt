@@ -22,23 +22,33 @@ import kotlinx.coroutines.flow.asStateFlow
 class PeerStore(context: Context) {
 
     private val sp = context.applicationContext.getSharedPreferences("afmu", Context.MODE_PRIVATE)
-    private val lock = Any()
 
-    private val _peers = MutableStateFlow<List<PeerRecord>>(emptyList())
-    val peers: StateFlow<List<PeerRecord>> = _peers.asStateFlow()
+    /**
+     * The table itself is **process-wide**, not per instance.
+     *
+     * Several things hold a `PeerStore`: the server (through `Bridge`), the UI, a one-off for
+     * a discovery probe. If each kept its own copy, approving a pairing in the UI would write
+     * the record into the UI's copy while the handshake kept asking the server's — and the
+     * peer that was just approved would be refused by the very device that approved it, until
+     * something happened to recreate that instance. This list is an access-control list; there
+     * is exactly one of it.
+     */
+    private val _peers get() = shared
+    val peers: StateFlow<List<PeerRecord>> = shared.asStateFlow()
 
     /**
      * How many rows the last load threw away (unusable or duplicate fingerprints), so the UI
      * can say so. Silently showing a shorter list than what is stored is how a "wait, wasn't
      * that phone paired?" mystery starts.
      */
-    @Volatile
-    var droppedOnLoad: Int = 0
-        private set
+    val droppedOnLoad: Int get() = dropped
 
     init {
         synchronized(lock) {
-            _peers.value = PeerCodec.decode(sp.getString(KEY, null)) { droppedOnLoad = it }
+            if (!loaded) {
+                shared.value = PeerCodec.decode(sp.getString(KEY, null)) { dropped = it }
+                loaded = true
+            }
         }
         // Note what was dropped but do **not** write the cleaned list back here: that would
         // destroy the original before the user has seen any notice about it.
@@ -124,5 +134,11 @@ class PeerStore(context: Context) {
 
     private companion object {
         const val KEY = "peersV2"
+
+        /** See [peers]: one table per process, not one per holder. */
+        val lock = Any()
+        val shared = MutableStateFlow<List<PeerRecord>>(emptyList())
+        var loaded = false
+        @Volatile var dropped = 0
     }
 }

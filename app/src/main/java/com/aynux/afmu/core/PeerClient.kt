@@ -253,9 +253,16 @@ class PeerClient(private val context: Context) {
         expectedFp: String,
         commitHex: String,
         selfName: String,
+        selfPort: Int,
     ): JSONObject = openPinned(
         host, port, expectedFp, "pair-v2", "POST",
-        mapOf("step" to "commit", "commit" to commitHex, "name" to selfName, "os" to "android"),
+        mapOf(
+            "step" to "commit", "commit" to commitHex, "name" to selfName, "os" to "android",
+            // Our listening port. From the socket the peer sees our IP and our *source* port,
+            // not where we receive — without this the address hint it stores is a guess, and
+            // dialling us back later fails. v1's /api/authorize always carried it.
+            "port" to selfPort.toString(),
+        ),
     ).readJson()
 
     /**
@@ -272,6 +279,7 @@ class PeerClient(private val context: Context) {
         port: Int,
         commitHex: String,
         selfName: String,
+        selfPort: Int,
     ): Pair<JSONObject, String> {
         val identity = Identity.ensure() ?: throw IOException("this device has no usable identity")
         val trust = Tls.RecordingTrustManager()
@@ -279,6 +287,7 @@ class PeerClient(private val context: Context) {
             ?: throw IOException("this device has no usable identity")
         val params = mapOf(
             "step" to "commit", "commit" to commitHex, "name" to selfName, "os" to "android",
+            "port" to selfPort.toString(),
         )
         val query = params.entries.joinToString("&") { (k, v) -> "${encode(k)}=${encode(v)}" }
         val url = URL("https://$host:$port/api/pair-v2?$query")

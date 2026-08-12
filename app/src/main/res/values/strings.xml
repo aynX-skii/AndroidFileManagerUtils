@@ -143,6 +143,12 @@
     <string name="auth_channel_desc">Asks you to approve a PC that wants to connect</string>
     <string name="auth_notif_title">%1$s wants to connect</string>
     <string name="auth_notif_body">From %1$s. Confirmation code %2$s — it must match the one on the PC.</string>
+    <string name="pair_notif_title">%1$s wants to pair</string>
+    <string name="pair_notif_body">From %1$s. Compare code %2$s — it must match the code on their screen, character for character. If it differs, deny.</string>
+    <string name="pair_link_title">Pair from this link?</string>
+    <string name="pair_link_body">A link asks this phone to pair with %1$s (%2$s).</string>
+    <string name="pair_link_hint">Only continue if you just opened this link yourself. Any app on this phone can send one, and pairing gives the other device access.</string>
+    <string name="pair_link_continue">Pair</string>
     <string name="auth_dialog_title">Allow this connection?</string>
     <string name="auth_dialog_body">%1$s (%2$s) is asking to connect to this phone.</string>
     <string name="auth_dialog_code_hint">Only allow if the other screen is showing this same code.</string>

@@ -16,6 +16,8 @@ import com.aynux.afmu.R
 import com.aynux.afmu.core.AuthRequests
 import com.aynux.afmu.core.Bridge
 import com.aynux.afmu.core.LocaleHelper
+import com.aynux.afmu.core.PairSas
+import com.aynux.afmu.core.PeerStore
 import com.aynux.afmu.core.Prefs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -63,7 +65,12 @@ class TransferService : Service() {
         // is usually in a pocket, not on the app's home screen, when the PC asks.
         if (intent?.action == ACTION_ALLOW || intent?.action == ACTION_DENY) {
             intent.getStringExtra(EXTRA_REQUEST_ID)?.let {
-                AuthRequests.decide(it, granted = intent.action == ACTION_ALLOW)
+                // Approving here has to mean exactly what it means in the dialog — for a v2
+                // pairing that includes writing the record. Calling decide() alone left the
+                // pairing half-done: the initiator thought it was paired, this device refused
+                // it from then on.
+                if (intent.action == ACTION_ALLOW) AuthRequests.approve(it, PeerStore(this))
+                else AuthRequests.decide(it, granted = false)
             }
             notificationManager().cancel(AUTH_NOTIFICATION_ID)
             // Falls through: the request only exists while the server runs, so this is not a
@@ -81,7 +88,11 @@ class TransferService : Service() {
 
         authWatcher = scope.launch {
             AuthRequests.pending.collectLatest { request ->
-                if (request == null) {
+                // A pairing that has not reached step 2 has no compare code yet, and a prompt
+                // with nothing to compare is a prompt asking the user to guess. Same rule as
+                // the in-app dialog; the peer is mid-handshake and will get there in
+                // milliseconds or time out on its own.
+                if (request == null || (request.isPairing && request.sas.isEmpty())) {
                     notificationManager().cancel(AUTH_NOTIFICATION_ID)
                 } else {
                     notificationManager().notify(AUTH_NOTIFICATION_ID, buildAuthNotification(request))
@@ -189,9 +200,21 @@ class TransferService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
 
-        val body = getString(R.string.auth_notif_body, request.host, request.code)
+        // v2 shows the compare code, v1 the 4-digit confirmation code. `request.code` is
+        // always empty for a pairing, so printing it unconditionally asked the user to approve
+        // a pairing with no code at all — exactly what the dialog was fixed not to do.
+        val body = if (request.isPairing) {
+            getString(R.string.pair_notif_body, request.host, PairSas.format(request.sas))
+        } else {
+            getString(R.string.auth_notif_body, request.host, request.code)
+        }
         return NotificationCompat.Builder(this, AUTH_CHANNEL_ID)
-            .setContentTitle(getString(R.string.auth_notif_title, request.name))
+            .setContentTitle(
+                getString(
+                    if (request.isPairing) R.string.pair_notif_title else R.string.auth_notif_title,
+                    request.name,
+                )
+            )
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setSmallIcon(android.R.drawable.ic_lock_idle_lock)

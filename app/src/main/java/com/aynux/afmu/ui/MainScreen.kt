@@ -157,6 +157,40 @@ fun MainScreen(
         }
     }
 
+    state.pendingLink?.let { link ->
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissPairLink() },
+            title = { Text(stringResource(R.string.pair_link_title)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        stringResource(
+                            R.string.pair_link_body,
+                            link.name.ifBlank { link.hosts.firstOrNull().orEmpty() },
+                            "${link.hosts.firstOrNull().orEmpty()}:${link.port}",
+                        ),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        stringResource(R.string.pair_link_hint),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = { viewModel.confirmPairLink() }) {
+                    Text(stringResource(R.string.pair_link_continue))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.dismissPairLink() }) {
+                    Text(stringResource(R.string.auth_deny))
+                }
+            },
+        )
+    }
+
     state.outgoingAuth?.let { pending ->
         OutgoingAuthDialog(pending) { viewModel.cancelAuthorization() }
     }

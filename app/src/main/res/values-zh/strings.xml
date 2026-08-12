@@ -140,6 +140,12 @@
     <string name="auth_channel_desc">有设备想连接本机时提醒你确认</string>
     <string name="auth_notif_title">%1$s 请求连接</string>
     <string name="auth_notif_body">来自 %1$s，确认码 %2$s —— 必须和对方屏幕上显示的一致。</string>
+    <string name="pair_notif_title">%1$s 想要配对</string>
+    <string name="pair_notif_body">来自 %1$s。比对码 %2$s —— 必须和对方屏幕上的逐字符一致。不一样就拒绝。</string>
+    <string name="pair_link_title">按这个链接配对吗？</string>
+    <string name="pair_link_body">有一个链接要求本机与 %1$s（%2$s）配对。</string>
+    <string name="pair_link_hint">只有在你刚才亲自点开这个链接时才继续。本机上任何应用都能发出这样的链接，而配对等于把访问权交给对方设备。</string>
+    <string name="pair_link_continue">配对</string>
     <string name="auth_dialog_title">允许这次连接？</string>
     <string name="auth_dialog_body">%1$s（%2$s）正在请求连接本机。</string>
     <string name="auth_dialog_code_hint">只有对方屏幕上显示的确认码与此相同时才点允许。</string>

@@ -101,7 +101,8 @@ class MainActivity : ComponentActivity() {
         // the same parser and the same pairing flow as a scan: a second way *in* must not
         // become a second set of rules about what a valid code is.
         if (intent?.action == Intent.ACTION_VIEW) {
-            intent.dataString?.let { viewModel.onCodeScanned(it) }
+            // Deliberately not onCodeScanned(): a link is not consent. See onPairLink.
+            intent.dataString?.let { viewModel.onPairLink(it) }
             return
         }
 

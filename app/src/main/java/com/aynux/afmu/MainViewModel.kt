@@ -138,6 +138,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val zeroTrustMode: Boolean = false,
         /** Guest mode: the browser interface and password auth. See [Prefs.guestMode]. */
         val guestMode: Boolean = false,
+        /** A pairing link waiting for the user to confirm it was them. See [onPairLink]. */
+        val pendingLink: PairPayload? = null,
         val selectedPeer: Discovery.Peer? = null,
         val peerToken: String = "",
         val scanning: Boolean = false,
@@ -159,6 +161,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val prefs = Prefs(app)
     private val peerStore = PeerStore(app)
+
+    /**
+     * What the last scan actually heard back, kept apart from what the list shows. The list is
+     * discovery plus the pairing table, so it cannot be the input to rebuilding itself.
+     *
+     * Declared **before** `init`: the collector there fires while the constructor is still
+     * running, and a property declared after it is still null at that moment — which on a
+     * non-null Kotlin type is a crash on launch, not a warning.
+     */
+    private var discovered: List<Discovery.Peer> = emptyList()
     private val client = PeerClient(app)
     private val ids = AtomicLong(0)
 
@@ -222,7 +234,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     it.copy(
                         pairedPeers = paired,
                         pairedDropped = peerStore.droppedOnLoad,
-                        peers = mergePeers(it.peers, paired.toPeers()),
+                        // Rebuilt from what the last scan actually heard, not from the list
+                        // we last showed: merging the state list into itself means a peer that
+                        // was just unpaired never leaves it, and sending to that stale row
+                        // would go out as plaintext + token to the device just revoked.
+                        peers = mergePeers(discovered, paired.toPeers()),
                     )
                 }
             }
@@ -413,26 +429,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun approveAuth() {
         val request = _state.value.pendingAuth ?: return
 
+        // What "approve" means lives in AuthRequests, so the notification shade cannot mean
+        // something different — see AuthRequests.approve.
+        AuthRequests.approve(request.id, peerStore) ?: return
+
         if (request.isPairing) {
-            // v2: tapping allow **is** writing the peer's fingerprint into the pairing table —
-            // that is what opens the door (v2 §4.2.3). **No token leaves the device**; the
-            // identity is the key pair.
-            peerStore.upsert(
-                PeerRecord(
-                    fp = request.peerFp,
-                    name = request.name,
-                    os = request.os,
-                    lastHost = request.host,
-                    lastPort = request.port.takeIf { it > 0 } ?: Prefs.DEFAULT_PORT,
-                )
-            )
-            AuthRequests.decide(request.id, granted = true)
             Bridge.log("Paired with ${request.name}, fingerprint ${Base32.group(request.peerFp)}")
             _state.update { it.copy(message = str(R.string.msg_paired_with) + " " + request.name) }
             return
         }
-
-        AuthRequests.decide(request.id, granted = true)
         Bridge.log("Allowed ${request.name} (${request.host}) to connect")
         _state.update { it.copy(message = str(R.string.msg_auth_allowed)) }
     }
@@ -444,6 +449,33 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ------------------------------------------------------------------ QR pairing
+
+    /**
+     * An `afmu://pair` link arrived as an intent (§4.2.5).
+     *
+     * **Not** routed straight into [onCodeScanned], even though it is the same payload.
+     * Pointing a camera at a code is an act by the person holding the phone; an intent is
+     * something *any app on this device* can fire, and acting on it unprompted would let one
+     * hand our token to an address of its choosing (v1) or get its own fingerprint written
+     * into the pairing table (v2, since the other end is free to approve instantly).
+     * So the link only gets as far as a confirmation.
+     */
+    fun onPairLink(raw: String) {
+        val payload = PairPayload.parse(raw)
+        if (payload == null) {
+            _state.update { it.copy(message = str(R.string.msg_not_afmu_code)) }
+            return
+        }
+        _state.update { it.copy(pendingLink = payload) }
+    }
+
+    fun dismissPairLink() = _state.update { it.copy(pendingLink = null) }
+
+    fun confirmPairLink() {
+        val payload = _state.value.pendingLink ?: return
+        _state.update { it.copy(pendingLink = null) }
+        viewModelScope.launch { applyPairing(payload) }
+    }
 
     fun openScanner() = _state.update { it.copy(scannerOpen = true) }
     fun closeScanner() = _state.update { it.copy(scannerOpen = false) }
@@ -546,7 +578,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             payload.hosts.firstNotNullOfOrNull { host ->
                 runCatching {
                     val started = client.pairCommit(
-                        host, payload.port, fp, commit.toHex(), prefs.deviceName,
+                        host, payload.port, fp, commit.toHex(), prefs.deviceName, selfPort(),
                     )
                     val session = started.optString("session")
                     val nonceB = started.optString("nb").fromHex()
@@ -651,7 +683,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val outcome = withContext(Dispatchers.IO) {
                 runCatching {
                     val (started, fp) = client.pairCommitUnpinned(
-                        peer.host, peer.port, commit.toHex(), prefs.deviceName,
+                        peer.host, peer.port, commit.toHex(), prefs.deviceName, selfPort(),
                     )
                     val session = started.optString("session")
                     val nonceB = started.optString("nb").fromHex()
@@ -705,6 +737,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val reply = withContext(Dispatchers.IO) {
                 runCatching { client.pairPoll(peer.host, peer.port, fp, session) }.getOrNull()
             } ?: continue
+            // A session the peer no longer knows is gone for good — read the 404 as expired
+            // rather than retrying it (§4.2.3.1). Sitting here for the rest of the minute only
+            // delays telling the user something they could act on.
+            if (!reply.optBoolean("ok", true) &&
+                reply.optString("error").contains("expired", ignoreCase = true)
+            ) {
+                _state.update { it.copy(outgoingAuth = null, message = str(R.string.msg_pair_timeout)) }
+                return
+            }
 
             when (reply.optString("status")) {
                 "pending" -> continue
@@ -732,6 +773,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         _state.update { it.copy(outgoingAuth = null, message = str(R.string.msg_pair_timeout)) }
     }
+
+    /** The port this phone receives on, for the address hint the peer will store. */
+    private fun selfPort(): Int = Bridge.state.value.port.takeIf { it > 0 } ?: prefs.port
 
     private fun ByteArray.toHex() = Hex.encode(this)
 
@@ -958,6 +1002,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val found = withContext(Dispatchers.IO) { Bridge.probePeers(prefs, peerStore) }
         // Nothing answered does not mean there is nobody: broadcast is filtered on plenty of
         // networks, and a paired device's stored address usually still works.
+        discovered = found
         val candidates = mergePeers(found, _state.value.pairedPeers.toPeers())
         val peer = candidates.firstOrNull { "${it.host}:${it.port}" == prefs.lastPeer }
             ?: candidates.firstOrNull()

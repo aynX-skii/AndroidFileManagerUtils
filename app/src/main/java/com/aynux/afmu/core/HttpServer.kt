@@ -503,11 +503,6 @@ class HttpServer(
     // ---------------------------------------------------------------------- endpoints
 
     /**
-     * `POST` registers a request and answers with an id; `GET ?request=<id>` polls it
-     * (PROTOCOL.md §3.8). The token is handed over only once the user has tapped Allow, and
-     * only to whoever holds the id — which was given to the requester alone.
-     */
-    /**
      * The v2 pairing handshake (PROTOCOL.md v2 §4.2.3): three steps over an encrypted but
      * not-yet-pinned connection.
      *
@@ -591,10 +586,14 @@ class HttpServer(
                     )
                     return
                 }
+                // The peer's own listening port, self-reported. It is only ever an address
+                // hint and never takes part in a decision — getting it wrong costs a failed
+                // connection later, which is the safe direction.
+                val peerPort = req.query["port"]?.toIntOrNull()?.takeIf { it in 1..65535 } ?: 0
                 val request = AuthRequests.createPairing(
                     prefs.allowAuthRequests,
                     req.query["name"].orEmpty(), req.query["os"].orEmpty(),
-                    req.remoteHost, peerFp, commit,
+                    req.remoteHost, peerFp, commit, peerPort,
                 )
                 drainBody(req)
                 if (request == null) {
@@ -649,6 +648,11 @@ class HttpServer(
         }
     }
 
+    /**
+     * `POST` registers a request and answers with an id; `GET ?request=<id>` polls it
+     * (PROTOCOL.md §3.8). The token is handed over only once the user has tapped Allow, and
+     * only to whoever holds the id — which was given to the requester alone.
+     */
     private fun handleAuthorize(req: Request, out: OutputStream) {
         when (req.method) {
             "POST", "PUT" -> {
