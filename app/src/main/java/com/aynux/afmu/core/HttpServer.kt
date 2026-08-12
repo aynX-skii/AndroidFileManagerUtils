@@ -520,6 +520,18 @@ class HttpServer(
      * in the request is decoration; the fingerprint is the thing being authorised.
      */
     private fun handlePairV2(req: Request, out: OutputStream) {
+        // Pairing over plaintext is meaningless: there is no certificate to authorise, and
+        // an eavesdropper would read the whole exchange. The route table below reaches this
+        // from the plaintext path too (it has to, so a peer that pairs mid-connection can
+        // still poll), so say no here rather than leaving it to fail obscurely further down.
+        if (!req.isTls) {
+            drainBody(req)
+            sendJson(
+                out, "400 Bad Request",
+                jsonError("pairing requires an encrypted connection"), true,
+            )
+            return
+        }
         val identity = Identity.ensure(log)
         if (identity == null) {
             drainBody(req)

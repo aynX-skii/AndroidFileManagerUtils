@@ -57,11 +57,12 @@ object AuthRequests {
         /** v2 requests carry a fingerprint; v1 ones never do. */
         val isPairing: Boolean get() = peerFp.isNotEmpty()
 
-        // ByteArray in a data class compares by reference, and these are compared nowhere —
-        // spelling that out rather than leaving a trap for whoever adds the first ==.
-        override fun equals(other: Any?): Boolean = other is Request && other.id == id &&
-            other.status == status && other.sas == sas
-        override fun hashCode(): Int = id.hashCode() * 31 + status.hashCode()
+        // No custom equals, on purpose. The generated one compares the ByteArray fields by
+        // reference, so two logically identical requests can come out unequal — which is the
+        // *safe* direction here: this type's equality is only ever used by the StateFlow
+        // behind [pending] to decide whether to emit, and erring toward "different" costs one
+        // redundant emission. A narrower equals would do the opposite and silently swallow an
+        // update, which is how a dialog ends up showing a stale compare code.
     }
 
     /** The request awaiting a decision, or null. Drives both the notification and the dialog. */
