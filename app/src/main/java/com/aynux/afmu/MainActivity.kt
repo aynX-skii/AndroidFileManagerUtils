@@ -97,6 +97,14 @@ class MainActivity : ComponentActivity() {
 
     /** Files sent here from another app's share sheet go straight to the selected PC. */
     private fun handleShare(intent: Intent?) {
+        // An afmu://pair link — the same payload the QR code carries. Routed through exactly
+        // the same parser and the same pairing flow as a scan: a second way *in* must not
+        // become a second set of rules about what a valid code is.
+        if (intent?.action == Intent.ACTION_VIEW) {
+            intent.dataString?.let { viewModel.onCodeScanned(it) }
+            return
+        }
+
         val uris: List<Uri> = when (intent?.action) {
             Intent.ACTION_SEND ->
                 listOfNotNull(intent.getParcelableExtraCompat<Uri>(Intent.EXTRA_STREAM))

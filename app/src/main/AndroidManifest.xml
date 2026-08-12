@@ -47,6 +47,19 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+            <!--
+                Pairing links. The same string the QR code carries, so a code that reaches the
+                phone as text — a chat message, a note, a screenshot's alt text — is as usable
+                as one held up to the camera. It carries a public-key fingerprint and no
+                secret, which is why it is safe to pass around this way at all (v2 §4.1).
+            -->
+            <intent-filter android:autoVerify="false">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="afmu" android:host="pair" />
+            </intent-filter>
+
             <!-- Share sheet: send files straight to the PC from any app. -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
