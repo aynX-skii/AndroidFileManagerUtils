@@ -556,19 +556,33 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
                     // Ours, computed here. Theirs is only a cross-check for implementation bugs.
                     val mine = PairSas.compute(identity.fingerprint, fp.toFingerprintBytes(), nonceA, nonceB)
-                    if (mine == null || mine != revealed.optString("sas")) return@runCatching null
-                    Triple(host, session, mine)
+                    val theirs = revealed.optString("sas")
+                    when {
+                        mine == null || theirs.isEmpty() -> null
+                        // A mismatch is not "this address did not work" — it is a finding.
+                        // Stop walking the address list and say so.
+                        mine != theirs -> return@withContext host to PairOutcome.CodeMismatch
+                        else -> host to PairOutcome.Ok(fp, session, mine)
+                    }
                 }.getOrNull()
             }
         }
         _state.update { it.copy(scanning = false) }
 
         if (outcome == null) {
-            _state.update { it.copy(message = str(R.string.msg_pair_failed)) }
-            Bridge.log("v2 pairing did not get past the compare-code step")
+            // None of the addresses answered — a multi-homed PC advertises several and only
+            // the one on our subnet works, so "all of them failed" is the ordinary shape of
+            // "not reachable", not a finding.
+            PairOutcome.NoAnswer.report()
             return
         }
-        val (host, session, sas) = outcome
+        val (host, result) = outcome
+        if (result !is PairOutcome.Ok) {
+            result.report()
+            return
+        }
+        val session = result.session
+        val sas = result.sas
 
         val peer = Discovery.Peer(payload.name.ifBlank { host }, payload.os, host, payload.port)
         _state.update {
@@ -579,6 +593,37 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
         authJob?.cancel()
         authJob = viewModelScope.launch { pollPairingV2(peer, fp, session) }
+    }
+
+    /**
+     * What came back from a pairing attempt.
+     *
+     * [CodeMismatch] is kept apart from [NoAnswer] on purpose. They look the same from the
+     * call site and could not be more different to the user: a peer that did not answer is a
+     * network hiccup and retrying is the right move, while two ends computing **different**
+     * compare codes means either an implementation bug or somebody relaying the connection —
+     * and the one thing the user must not do then is shrug and try again. One message covering
+     * both teaches people to ignore the half that matters.
+     */
+    private sealed interface PairOutcome {
+        data class Ok(val fp: String, val session: String, val sas: String) : PairOutcome
+        data object CodeMismatch : PairOutcome
+        data object NoAnswer : PairOutcome
+    }
+
+    private fun PairOutcome.report(): Boolean = when (this) {
+        is PairOutcome.Ok -> true
+        PairOutcome.CodeMismatch -> {
+            // Never show either code here. The user compares codes to detect exactly this, and
+            // showing one now invites them to "check" a value that has already failed the check.
+            _state.update { it.copy(message = str(R.string.msg_pair_code_mismatch)) }
+            Bridge.log("The two ends computed different compare codes — pairing aborted")
+            false
+        }
+        PairOutcome.NoAnswer -> {
+            _state.update { it.copy(message = str(R.string.msg_pair_no_answer)) }
+            false
+        }
     }
 
     /**
@@ -610,7 +655,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     )
                     val session = started.optString("session")
                     val nonceB = started.optString("nb").fromHex()
-                    if (session.isEmpty() || nonceB.size != 32) return@runCatching null
+                    if (session.isEmpty() || nonceB.size != 32) return@runCatching PairOutcome.NoAnswer
 
                     val revealed = client.pairReveal(peer.host, peer.port, fp, session, nonceA.toHex())
 
@@ -620,18 +665,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     val mine = PairSas.compute(
                         identity.fingerprint, fp.toFingerprintBytes(), nonceA, nonceB,
                     )
-                    if (mine == null || mine != revealed.optString("sas")) return@runCatching null
-                    Triple(fp, session, mine)
-                }.getOrNull()
+                    val theirs = revealed.optString("sas")
+                    when {
+                        mine == null -> PairOutcome.NoAnswer
+                        theirs.isEmpty() -> PairOutcome.NoAnswer
+                        mine != theirs -> PairOutcome.CodeMismatch
+                        else -> PairOutcome.Ok(fp, session, mine)
+                    }
+                }.getOrElse { PairOutcome.NoAnswer }
             }
             _state.update { it.copy(scanning = false) }
 
-            if (outcome == null) {
-                _state.update { it.copy(message = str(R.string.msg_pair_failed)) }
-                Bridge.log("Encrypted pairing with ${peer.host} did not get past the compare code")
+            if (outcome !is PairOutcome.Ok) {
+                outcome.report()
                 return@launch
             }
-            val (fp, session, sas) = outcome
+            val fp = outcome.fp
+            val session = outcome.session
+            val sas = outcome.sas
 
             _state.update {
                 it.copy(outgoingAuth = OutgoingAuth(peer, code = "", sending = false,

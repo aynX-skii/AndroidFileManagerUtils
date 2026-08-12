@@ -68,7 +68,8 @@
     <string name="language_system">跟随系统</string>
 
     <string name="msg_pair_no_identity">这台手机没有可用的加密身份，无法进行加密配对。</string>
-    <string name="msg_pair_failed">配对失败 —— 比对码不一致，或者对方没有应答。</string>
+    <string name="msg_pair_no_answer">配对失败 —— 对方没有应答。确认它和本机在同一网络、接收服务开着，然后再试。</string>
+    <string name="msg_pair_code_mismatch">已中止：两台设备算出的比对码不一样。不要重试 —— 要么有人在中继这条连接，要么两端版本对不上。两个码都不显示，因为「比对它们」正是刚刚没通过的那一步。</string>
     <string name="msg_pair_declined">对方拒绝了本次配对。</string>
     <string name="msg_pair_timeout">配对超时，对方没有确认。</string>
     <string name="pair_compare_code">比对码</string>

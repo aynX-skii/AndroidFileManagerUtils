@@ -71,7 +71,8 @@
     <string name="language_zh">中文</string>
 
     <string name="msg_pair_no_identity">This phone has no usable identity, so encrypted pairing is unavailable.</string>
-    <string name="msg_pair_failed">Pairing failed — the compare codes did not match, or the device did not answer.</string>
+    <string name="msg_pair_no_answer">Pairing failed — the other device did not answer. Check it is on the same network with its receiving service running, then try again.</string>
+    <string name="msg_pair_code_mismatch">Stopped: the two devices computed different compare codes. Do not retry — either something is relaying this connection, or the two versions disagree. Neither code is shown, because comparing them is exactly the check that just failed.</string>
     <string name="msg_pair_declined">The other device declined the pairing.</string>
     <string name="msg_pair_timeout">Pairing timed out — nobody confirmed on the other device.</string>
     <string name="pair_compare_code">Compare code</string>
