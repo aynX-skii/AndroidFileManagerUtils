@@ -131,6 +131,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         /** Serve encrypted connections only — the phone cannot serve both at once, see
          *  [com.aynux.afmu.core.HttpServer.handle]. */
         val encryptedOnly: Boolean = false,
+        /** The running server really has a TLS stack. Null identity leaves this false. */
+        val tlsReady: Boolean = false,
         /** Zero-trust mode: paired devices only, encrypted only (draft §9). */
         val zeroTrustMode: Boolean = false,
         /** Guest mode: the browser interface and password auth. See [Prefs.guestMode]. */
@@ -176,6 +178,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 _state.update {
                     it.copy(
                         serverRunning = bridge.running,
+                        tlsReady = bridge.tlsReady,
                         port = bridge.port,
                         urls = bridge.urls,
                         network = bridge.network,

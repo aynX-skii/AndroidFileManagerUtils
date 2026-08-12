@@ -18,6 +18,8 @@ object Bridge {
     data class State(
         val running: Boolean = false,
         val port: Int = 0,
+        /** Whether the running server actually has a TLS stack — not what the switch says. */
+        val tlsReady: Boolean = false,
         val addresses: List<NetUtils.LocalAddress> = emptyList(),
         val network: String = "",
         val onLan: Boolean = false,
@@ -62,7 +64,7 @@ object Bridge {
             .onFailure { log("Discovery unavailable: ${it.message}") }
         discovery = responder
 
-        _state.update { it.copy(running = true, port = port) }
+        _state.update { it.copy(running = true, port = port, tlsReady = httpServer.tlsReady) }
         refresh(app)
     }
 
@@ -75,7 +77,7 @@ object Bridge {
         discovery = null
         server?.stop()
         server = null
-        _state.update { it.copy(running = false, port = 0) }
+        _state.update { it.copy(running = false, port = 0, tlsReady = false) }
     }
 
     /** Re-reads network interfaces; call after the Wi-Fi state changes. */
@@ -87,6 +89,7 @@ object Bridge {
                 onLan = NetUtils.onLan(context),
                 port = server?.port ?: 0,
                 running = server?.isRunning == true,
+                tlsReady = server?.tlsReady == true,
             )
         }
     }

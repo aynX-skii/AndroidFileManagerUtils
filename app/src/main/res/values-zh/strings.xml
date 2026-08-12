@@ -13,6 +13,14 @@
     <string name="discoverable_hint">在你点这里之前，别的设备只能看到一个地址。点了之后的一分钟里，它们也能看到本机名字。</string>
     <string name="unencrypted_badge">未加密</string>
     <string name="unencrypted_detail">流量是明文 HTTP。同一网络里的任何人都能看到文件名和文件内容。请只在信任的网络里使用。</string>
+    <string name="transport_plaintext">未加密</string>
+    <string name="transport_plaintext_detail">流量是明文 HTTP。同一网络里的任何人都能看到文件名和文件内容。请只在信任的网络里使用。</string>
+    <string name="transport_unavailable">谁也连不上</string>
+    <string name="transport_unavailable_detail">「只接受加密连接」开着，但加密没能就绪，所以所有连接一律拒绝，不会悄悄退回明文。原因见下面的活动日志。</string>
+    <string name="transport_encrypted_guests">已加密（含访客）</string>
+    <string name="transport_encrypted_guests_detail">流量已加密，挡得住偷听。但访客模式开着：没配对过的设备凭访问密码也能进，它们的身份没有经过验证。</string>
+    <string name="transport_paired_only">只接受已配对设备，全程加密</string>
+    <string name="transport_paired_only_detail">只有配对表里的设备连得上，认证靠双方的密钥。这是 v2 完整的那道防线。</string>
     <string name="network_label">网络：%1$s</string>
     <string name="no_lan_detected">  ·  未检测到局域网</string>
     <string name="refresh_network">刷新网络</string>

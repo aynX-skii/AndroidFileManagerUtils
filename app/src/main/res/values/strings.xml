@@ -14,6 +14,14 @@
     <string name="discoverable_hint">Other devices see only an address until you tap this. For one minute they also see this phone\'s name.</string>
     <string name="unencrypted_badge">Unencrypted</string>
     <string name="unencrypted_detail">Traffic is plain HTTP. Anyone on this network can read file names and contents. Use it on networks you trust.</string>
+    <string name="transport_plaintext">Plaintext</string>
+    <string name="transport_plaintext_detail">Traffic is plain HTTP. Anyone on this network can read file names and contents. Use it on networks you trust.</string>
+    <string name="transport_unavailable">Nothing can connect</string>
+    <string name="transport_unavailable_detail">Encrypted-only is on but encryption could not be set up, so every connection is refused rather than quietly downgraded. See the activity log.</string>
+    <string name="transport_encrypted_guests">Encrypted (guests included)</string>
+    <string name="transport_encrypted_guests_detail">Traffic is encrypted, which stops eavesdropping. But guest mode is on: devices you have never paired with can get in with the access password, and their identity is unverified.</string>
+    <string name="transport_paired_only">Paired devices only, encrypted</string>
+    <string name="transport_paired_only_detail">Only devices in the pairing table can connect, authenticated by both devices\' keys. This is the full v2 guarantee.</string>
     <string name="network_label">Network: %1$s</string>
     <string name="no_lan_detected">  ·  no LAN detected</string>
     <string name="refresh_network">Refresh network</string>

@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Refresh
@@ -258,7 +259,7 @@ private fun ServerCard(
             // Stays on screen the whole time the server is up (PROTOCOL.md §2.2). Saying
             // "plain HTTP" only in the docs means the person deciding whether to leave this
             // running never reads it.
-            UnencryptedNotice()
+            TransportNotice(state)
 
             // Discovery replies carry no device name until this is tapped (§1.5).
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -312,41 +313,68 @@ private fun ServerCard(
 }
 
 /**
- * The permanent "this is not encrypted" banner (PROTOCOL.md §2.2).
+ * What this port is actually doing right now (PROTOCOL.md §2.2, v2 §8/§9).
  *
- * Deliberately not dismissible and not a one-time dialog: the fact does not go away while
- * the server runs, and a warning the user tapped through three weeks ago is not informed
- * consent today.
+ * Not dismissible and not a one-time dialog: the fact does not go away while the server runs,
+ * and a warning the user tapped through three weeks ago is not informed consent today.
+ *
+ * **But it has to be true.** This used to say "unencrypted" unconditionally, which was right
+ * for v1 and became a lie the moment zero-trust mode started refusing plaintext outright. A
+ * banner that is always on is a banner nobody reads — and then it is useless on the day it
+ * matters. So it follows the state that is actually in force, which is not the same as what
+ * the switches say: zero-trust overrides the other two.
  */
 @Composable
-private fun UnencryptedNotice() {
+private fun TransportNotice(state: MainViewModel.UiState) {
+    val plaintext = !state.encryptedOnly && !state.zeroTrustMode
+    // Encrypted-only with no TLS stack: the server refuses every connection rather than
+    // quietly serving plaintext, so say that instead of claiming either extreme.
+    val broken = !plaintext && !state.tlsReady
+    val guests = state.guestMode && !state.zeroTrustMode
+
+    val warn = plaintext || broken || guests
+    val container = if (warn) MaterialTheme.colorScheme.errorContainer
+                    else MaterialTheme.colorScheme.secondaryContainer
+    val onContainer = if (warn) MaterialTheme.colorScheme.onErrorContainer
+                      else MaterialTheme.colorScheme.onSecondaryContainer
+
+    val title = when {
+        plaintext -> R.string.transport_plaintext
+        broken -> R.string.transport_unavailable
+        guests -> R.string.transport_encrypted_guests
+        else -> R.string.transport_paired_only
+    }
+    val detail = when {
+        plaintext -> R.string.transport_plaintext_detail
+        broken -> R.string.transport_unavailable_detail
+        guests -> R.string.transport_encrypted_guests_detail
+        else -> R.string.transport_paired_only_detail
+    }
+
     Row(
         Modifier
             .fillMaxWidth()
-            .background(
-                MaterialTheme.colorScheme.errorContainer,
-                MaterialTheme.shapes.small,
-            )
+            .background(container, MaterialTheme.shapes.small)
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.Top,
     ) {
         Icon(
-            Icons.Filled.LockOpen,
+            if (warn) Icons.Filled.LockOpen else Icons.Filled.Lock,
             contentDescription = null,
-            tint = MaterialTheme.colorScheme.onErrorContainer,
+            tint = onContainer,
             modifier = Modifier.size(18.dp),
         )
         Spacer(Modifier.width(8.dp))
         Column {
             Text(
-                stringResource(R.string.unencrypted_badge),
+                stringResource(title),
                 style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onErrorContainer,
+                color = onContainer,
             )
             Text(
-                stringResource(R.string.unencrypted_detail),
+                stringResource(detail),
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onErrorContainer,
+                color = onContainer,
             )
         }
     }

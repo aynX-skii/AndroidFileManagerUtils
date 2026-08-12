@@ -196,6 +196,15 @@ class HttpServer(
         var pairedPeer = ""
 
         val factory = tlsFactory
+        if (factory == null && !prefs.allowLegacyPlaintext) {
+            // The user asked for encrypted-only and TLS did not come up — no identity, or the
+            // keystore refused. **Serving plaintext here would be the downgrade the setting
+            // exists to prevent** (PROTOCOL.md v2 §8.1 rule 1), and it would do it silently:
+            // the switch still reads "on". Drop the connection instead; [setUpTls] already
+            // said why in the log.
+            log("Dropped a connection from $remoteHost: encrypted-only is on but TLS is unavailable")
+            return
+        }
         if (factory != null) {
             val ssl = factory.createSocket(raw, remoteHost, raw.port, true) as SSLSocket
             Tls.harden(ssl, server = true)
