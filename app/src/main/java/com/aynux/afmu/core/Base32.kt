@@ -46,7 +46,7 @@ object Base32 {
         var buffer = 0
         var bits = 0
         for (ch in text) {
-            if (ch.isWhitespace() || ch == '-') continue
+            if (isSeparator(ch)) continue
             val idx = alphabet.indexOf(ch.uppercaseChar())
             if (idx < 0) return null
             buffer = (buffer shl 5) or idx
@@ -57,6 +57,22 @@ object Base32 {
             }
         }
         return out.toByteArray()
+    }
+
+    /**
+     * Characters skipped when reading a fingerprint back: the ones we print, plus the space
+     * variants a copy-paste tends to introduce.
+     *
+     * Spelled out rather than asking the platform whether something "is whitespace", because
+     * the two platforms disagree: `QChar::isSpace()` counts U+00A0, U+2007 and U+202F,
+     * `Char.isWhitespace()` does not. A fingerprint pasted with a non-breaking space in it was
+     * therefore accepted by the Linux end and rejected by the phone — one string, two answers,
+     * for the one value that decides which device you are talking to.
+     */
+    private fun isSeparator(c: Char): Boolean = when (c) {
+        ' ', '\t', '\n', '\r', '-' -> true
+        '\u00A0', '\u2007', '\u202F', '\u3000' -> true   // NBSP, figure, narrow NBSP, ideographic
+        else -> false
     }
 
     /** Grouped for reading aloud and comparing on screen. */

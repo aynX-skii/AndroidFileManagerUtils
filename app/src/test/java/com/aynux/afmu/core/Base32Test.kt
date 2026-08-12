@@ -78,4 +78,21 @@ class Base32Test {
         assertEquals("", Base32.encode(ByteArray(0)))
         assertArrayEquals(ByteArray(0), Base32.decode(""))
     }
+
+    @Test
+    fun `the separators skipped when reading a fingerprint are pinned, not the platform's idea of whitespace`() {
+        // Qt's QChar::isSpace() counts U+00A0, U+2007 and U+202F; Kotlin's Char.isWhitespace()
+        // does not. Asking each platform its own opinion gave one string two answers — and it
+        // is the string that decides which device you are talking to. So the set is explicit,
+        // and this pins it on both ends.
+        val fp = Base32.encode(ByteArray(32) { 0x11 })
+        val raw = ByteArray(32) { 0x11 }
+        for (sep in listOf(' ', '\t', '\n', '\r', '-', '\u00A0', '\u2007', '\u202F', '\u3000')) {
+            val withSep = fp.take(26) + sep + fp.drop(26)
+            assertArrayEquals("应当跳过 U+%04X".format(sep.code), raw, Base32.decode(withSep))
+        }
+        // Anything else is still fatal for the whole string — we skip separators, we do not
+        // skip "characters we did not understand".
+        assertNull(Base32.decode(fp.take(26) + "!" + fp.drop(26)))
+    }
 }
