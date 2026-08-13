@@ -7,7 +7,13 @@
 | [`conformance.py`](conformance.py) | 第一部分（v1） | **线格式**：字段、状态码、Range、multipart、路径穿越 |
 | [`conformance_v2.py`](conformance_v2.py) | 第二部分（v2） | **门禁**：谁能进、进来之后能碰到什么 |
 
-**Android 端和 Linux 端必须都通过**——这是两个实现不漂移的唯一保证。
+**Android、Linux、Windows 三端都必须通过**——这是几个实现不漂移的唯一保证。
+
+> 套件本身也会漂。`conformance.py` 写在只有 Android 和 Linux 的时候，
+> 于是「绝对路径 = 以 `/` 开头」这个假设直接长进了断言里，Windows 服务端
+> 一接上来就被判成不合法（它报的是 `C:/…`，那在那个平台上就是绝对路径，
+> 而 PROTOCOL.md §3.1 从没要求过首字符是什么）。现在统一走 `is_absolute()`，
+> 三种形态都收：POSIX、盘符、UNC。**再加平台时先看一眼这个函数。**
 
 两件事错起来的表现完全不同，所以两套都要有：线格式错了对端立刻报错，
 门禁错了**没有任何人会报错**。
@@ -21,8 +27,8 @@ pip 包」不冲突，也是 PROTOCOL.md §12 第 1 步交叉验证指纹用的�
 > - `./gradlew :app:testDebugUnitTest` —— 纯 JVM 单元测试，覆盖不依赖 Android 的部分：
 >   base32、SAS、滚动 rid、hex、协议常量、配对表编解码、TLS 钉扎的判定
 >   （向量取自 C++ 实现的真实输出）。
-> - `afmu-linux` 的 `cmake -DAFMU_TESTS=ON` + `ctest --test-dir build` ——
->   同一批东西的 C++ 一侧，断言和 Android 那边刻意一一对应。
+> - `afmu-linux` / `afmu-windows` 的 `cmake -DAFMU_TESTS=ON` + `ctest --test-dir build`
+>   —— 同一批东西的 C++ 一侧，断言和 Android 那边刻意一一对应。
 
 ## 跑
 
@@ -87,6 +93,25 @@ XDG_CONFIG_HOME="$S/cfg" QT_QPA_PLATFORM=offscreen ./build/afmu &
 
 python3 tests/conformance.py --host 127.0.0.1 --port 8865 --token test2test9
 ```
+
+Windows 端麻烦一点，**没有 `XDG_CONFIG_HOME` 这种口子**：那边的 `QStandardPaths`
+走 `SHGetKnownFolderPath`，不看任何环境变量。所以只能备份 → 换配置 → 跑 → 拷回来
+（`identity.pem` 别动，动了设备身份就变了）：
+
+```powershell
+$B = "$env:TEMP\afmu-backup"; Copy-Item -Recurse "$env:LOCALAPPDATA\afmu" $B
+# 写一份 serveRoots 指向临时目录的 config.json，端口 8865，再起 build\afmu.exe
+# ……跑完……
+Copy-Item -Force "$B\*" "$env:LOCALAPPDATA\afmu\"
+```
+
+那份测试配置里**必须带 `"plaintextStage3": true`**。少了它，§8.2 第 3 阶段的
+一次性迁移会在启动时把明文关掉，于是 v1 套件第一个请求就被断开，报的是
+「服务端在发完响应头之前就断开了」—— 看起来像服务端崩了，其实是它照规矩办事。
+`conformance_v2.py` 那套反过来，本来就要只加密 + 访客模式关。
+
+`openssl` 在 Windows 上不一定有；Git for Windows 自带一份，在
+`C:\Program Files\Git\usr\bin\openssl.exe`，加进 PATH 即可。
 
 其余写入类用例都关在服务端 inbox 下自建的 `afmu-conformance-<随机>` 目录里，跑完自动删。
 服务端是只读模式（`writable=false`）时，写入类用例自动跳过。

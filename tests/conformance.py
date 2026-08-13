@@ -271,6 +271,36 @@ def q(value: str) -> str:
     return "".join(ch if ch in safe else "".join(f"%{b:02X}" for b in ch.encode()) for ch in value)
 
 
+def is_absolute(path: Any) -> bool:
+    """
+    对端报的这个路径是不是绝对路径。
+
+    **别写成 `startswith("/")`。** 这套套件写在只有 Android 和 Linux 的时候，
+    那时候「绝对」和「以 / 开头」是同一件事，于是这个假设就直接长在断言里了。
+    Windows 服务端一接上来就露馅：它报的是 `C:/Users/…`，那在那个平台上就是
+    绝对路径，而套件把它判成不合法 —— **失败的是套件，不是被测的实现**。
+
+    规范这边没有站在 `/` 那一侧：§3.1 / §3.2 只写「绝对路径」，从没要求过
+    首字符是什么。客户端也不关心，它只是把这个串原样回填给 `?path=`。
+
+    所以三种形态都算数：
+
+      · POSIX          `/storage/emulated/0`
+      · 盘符           `C:/Users/…`、`C:\\Users\\…`（Qt 报的是正斜杠，两种都收）
+      · UNC 共享       `//nas/media`、`\\\\nas\\media`
+
+    盘符那条**必须带分隔符**：`C:foo` 是「C 盘当前目录下的 foo」，是相对路径，
+    而且正是 PathSafety 要挡的那类东西 —— 放它过去等于把一个真的越界形态
+    当成合法答案。
+    """
+    if not isinstance(path, str) or not path:
+        return False
+    if path[0] in "/\\":  # POSIX 根，或 UNC
+        return True
+    # 盘符：字母 + 冒号 + 分隔符
+    return len(path) >= 3 and path[0].isalpha() and path[1] == ":" and path[2] in "/\\"
+
+
 # -------------------------------------------------------------- §1 设备发现
 
 
@@ -565,7 +595,7 @@ def t_info_fields(ctx: Ctx) -> None:
     expect(isinstance(roots, list) and roots, "roots 必须是非空数组")
     for root in roots:
         expect(isinstance(root.get("name"), str), "root.name")
-        expect(isinstance(root.get("path"), str) and root["path"].startswith("/"), "root.path 必须是绝对路径")
+        expect(is_absolute(root.get("path")), f"root.path 必须是绝对路径，实到 {root.get('path')!r}")
 
 
 @case("§3.1 info", "Cache-Control: no-store")
@@ -1436,8 +1466,10 @@ def cleanup(ctx: Ctx, path: str) -> None:
 def make_scratch(ctx: Ctx) -> str:
     """在 inbox 下建一个临时目录，所有写入用例都关在里面。"""
     inbox = ctx.info.get("inbox")
-    if not isinstance(inbox, str) or not inbox.startswith("/"):
-        # inbox 可能是相对路径（Android 走 MediaStore 兜底时），退回第一个可写 root
+    if not is_absolute(inbox):
+        # inbox 可能是相对路径（Android 走 MediaStore 兜底时），退回第一个可写 root。
+        # 这里以前也是 startswith("/")，于是 Windows 的 `C:/…` 会被误判成相对路径，
+        # 白白绕进这条兜底 —— 恰好能跑，但跑的不是它该跑的那条路。
         roots = ctx.info.get("roots") or []
         inbox = roots[-1]["path"] if roots else ""
     if not inbox:
