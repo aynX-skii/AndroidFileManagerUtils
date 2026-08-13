@@ -11,6 +11,54 @@ class Prefs(context: Context) {
 
     init {
         settleDefaults()
+        migratePlaintextStage3()
+    }
+
+    /**
+     * §8.2 stage 3: plaintext goes off for **upgrade** installs too.
+     *
+     * **Changing the default would have done nothing here, and that is the whole point of
+     * this function.** [settleDefaults] only writes keys that are absent; any install that
+     * has run an earlier build already has `allowLegacyPlaintext: true` on disk, and no
+     * default ever gets consulted again. So stage 3 has to be a *migration*, not a default.
+     *
+     * It runs **once**, remembered by [KEY_STAGE3]. That is a requirement, not an
+     * optimisation: turning plaintext back on from the settings screen is a deliberate
+     * decision — §8.2 calls it "老设备需手动放行" — and switching it off again on the next
+     * launch would be arguing with the user, who would read it as a setting that will not
+     * stick.
+     *
+     * Turning it off has to be **announced**, which is what [KEY_STAGE3_NOTICE] is for. This
+     * is the same rule the rest of the codebase follows about silent downgrades, pointed the
+     * other way: a silent downgrade makes someone believe they are safe, a silent upgrade
+     * makes them believe the network broke. The flag is persisted rather than kept in memory
+     * because two components hold their own [Prefs] — whichever one is constructed first runs
+     * the migration, and it is usually not the one that can show a message.
+     */
+    private fun migratePlaintextStage3() = synchronized(TOKEN_LOCK) {
+        if (sp.getBoolean(KEY_STAGE3, false)) return@synchronized
+        val wasOn = sp.getBoolean(KEY_ALLOW_PLAINTEXT, false)
+        sp.edit()
+            .putBoolean(KEY_STAGE3, true)
+            .apply {
+                if (wasOn) {
+                    putBoolean(KEY_ALLOW_PLAINTEXT, false)
+                    putBoolean(KEY_STAGE3_NOTICE, true)
+                }
+            }
+            .apply()
+    }
+
+    /**
+     * The stage 3 migration switched plaintext off and nobody has been told yet.
+     *
+     * Read once by the UI, which then calls [clearPlaintextNotice]. Not cleared on read, so a
+     * process that dies between the two shows it again rather than swallowing it.
+     */
+    val plaintextNoticePending: Boolean get() = sp.getBoolean(KEY_STAGE3_NOTICE, false)
+
+    fun clearPlaintextNotice() {
+        sp.edit().putBoolean(KEY_STAGE3_NOTICE, false).apply()
     }
 
     /**
@@ -52,6 +100,12 @@ class Prefs(context: Context) {
 
         val edit = sp.edit()
         if (!hasGuest) edit.putBoolean(KEY_GUEST_MODE, upgrading)
+        // Still `upgrading`, even though stage 3 is about to turn it off — and the two-step
+        // is deliberate. What gets written here is **what this install's state effectively
+        // was**: an install predating the key was serving plaintext, whether or not it had
+        // somewhere to record that. [migratePlaintextStage3] then applies stage 3 to that
+        // answer and announces it. Writing `false` straight away would reach the same
+        // setting while losing the one thing the user needs told: that something changed.
         if (!hasPlaintext) edit.putBoolean(KEY_ALLOW_PLAINTEXT, upgrading)
         edit.apply()
     }
@@ -200,6 +254,10 @@ class Prefs(context: Context) {
         private const val KEY_ALLOW_PLAINTEXT = "allowLegacyPlaintext"
         private const val KEY_ZERO_TRUST = "zeroTrustMode"
         private const val KEY_GUEST_MODE = "guestMode"
+
+        /** §8.2 stage 3 ran. See [migratePlaintextStage3] — must match the Linux key name. */
+        private const val KEY_STAGE3 = "plaintextStage3"
+        private const val KEY_STAGE3_NOTICE = "plaintextStage3Notice"
         private const val KEY_SERVER_ENABLED = "server_enabled"
         private const val KEY_LANGUAGE = "language"
 

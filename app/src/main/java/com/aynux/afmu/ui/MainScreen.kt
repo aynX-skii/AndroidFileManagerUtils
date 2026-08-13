@@ -951,6 +951,26 @@ private fun EncryptionCard(
             onChange = { viewModel.setEncryptedOnly(it) },
         )
 
+        // The stage 3 migration turned plaintext off on this install (PROTOCOL.md v2 §8.2).
+        // Said next to the switch it changed, and dismissed by hand — a notice about "why did
+        // my old device stop connecting today" is worthless if it scrolls past on its own.
+        if (state.plaintextNotice) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(top = 8.dp),
+            ) {
+                Text(
+                    stringResource(R.string.plaintext_stage3_notice),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = { viewModel.dismissPlaintextNotice() }) {
+                    Text(stringResource(R.string.got_it))
+                }
+            }
+        }
+
         // Guest mode is the browser interface. The wording stays blunt on purpose — dressed
         // up as safe, it gets used where it should not be (draft §9).
         ToggleRow(

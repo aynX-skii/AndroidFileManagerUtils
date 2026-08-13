@@ -123,6 +123,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         /** Rows the last load discarded as unusable — said out loud rather than swallowed. */
         val pairedDropped: Int = 0,
         /**
+         * The §8.2 stage 3 migration switched plaintext off on this install and the user has
+         * not acknowledged it. Dismissed by hand, not on a timer: what it explains ("why did
+         * my old laptop stop connecting today") only comes up later.
+         */
+        val plaintextNotice: Boolean = false,
+        /**
          * This device's own fingerprint, grouped for reading. Empty when the identity could
          * not be minted (no AndroidKeyStore), which is also what turns encryption off.
          */
@@ -288,6 +294,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 encryptedOnly = !prefs.allowLegacyPlaintext,
                 zeroTrustMode = prefs.zeroTrustMode,
                 guestMode = prefs.guestMode,
+                plaintextNotice = prefs.plaintextNoticePending,
                 peerToken = prefs.peerToken,
                 allowAuthRequests = prefs.allowAuthRequests,
                 language = prefs.language,
@@ -308,12 +315,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun setEncryptedOnly(value: Boolean) {
         prefs.allowLegacyPlaintext = !value
-        _state.update { it.copy(encryptedOnly = value) }
+        // Touching the switch answers the notice, whichever way it was moved: the user has
+        // now seen that this setting exists and decided about it.
+        prefs.clearPlaintextNotice()
+        _state.update { it.copy(encryptedOnly = value, plaintextNotice = false) }
         if (_state.value.serverRunning) {
             val app = getApplication<Application>()
             TransferService.stop(app)
             TransferService.start(app)
         }
+    }
+
+    /** The user acknowledged the §8.2 stage 3 notice without changing the switch. */
+    fun dismissPlaintextNotice() {
+        prefs.clearPlaintextNotice()
+        _state.update { it.copy(plaintextNotice = false) }
     }
 
     /**

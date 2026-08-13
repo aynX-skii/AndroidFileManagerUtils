@@ -94,6 +94,9 @@
     <string name="paired_none">还没有配对过的设备。扫码配对之后，配对成功的设备会出现在这里。</string>
     <string name="paired_no_expiry">配对关系不会自动过期 —— 半年没用的设备下次还能直接连。要清理只能在这里手动解除。</string>
     <string name="paired_dropped">存着的记录里有 %1$d 条不可用，已忽略。</string>
+    <!-- 一次性提示：§8.2 第 3 阶段的迁移把升级安装的明文关掉了。 -->
+    <string name="plaintext_stage3_notice">明文连接已默认关闭。还在用旧版本的设备和浏览器界面会连不上 —— 需要的话，把上面的「只接受加密连接」重新关掉。</string>
+    <string name="got_it">知道了</string>
     <string name="paired_unnamed">未命名设备</string>
     <string name="paired_encrypted_only">仅加密</string>
     <string name="paired_since">配对于 %1$s</string>
