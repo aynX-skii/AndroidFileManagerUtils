@@ -938,15 +938,36 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(scanning = true) }
         viewModelScope.launch {
             val found = withContext(Dispatchers.IO) { Bridge.probePeers(prefs, peerStore) }
+            // **The scan adds strangers; it must not take paired devices away.**
+            //
+            // This used to assign `found` straight into the state, which drops every paired
+            // device that did not answer the broadcast — and plenty do not: Windows Firewall
+            // filters inbound UDP to the desktop client by default, APs isolate clients, and a
+            // phone with its screen off answers late or not at all. The symptom is precise and
+            // baffling: pair with a PC, watch it appear under "paired devices", tap Scan, and
+            // it vanishes from the send list. resolvePeer() has always merged the two; only
+            // this path forgot to.
+            //
+            // Caching `found` matters just as much. The pairing-table observer rebuilds the
+            // list from `discovered`, so leaving it stale here means the next table change
+            // (pairing anything, or a rid refreshing an address) resurrects the previous
+            // scan's results and throws this one away.
+            discovered = found
+            val candidates = mergePeers(found, _state.value.pairedPeers.toPeers())
             _state.update { current ->
                 val selected = current.selectedPeer
-                    ?: found.firstOrNull { "${it.host}:${it.port}" == prefs.lastPeer }
-                    ?: found.firstOrNull()
-                current.copy(scanning = false, peers = found, selectedPeer = selected)
+                    ?: candidates.firstOrNull { "${it.host}:${it.port}" == prefs.lastPeer }
+                    ?: candidates.firstOrNull()
+                current.copy(scanning = false, peers = candidates, selectedPeer = selected)
             }
             Bridge.log(
-                if (found.isEmpty()) "No PC answered — is `afmu serve` running?"
-                else "Found ${found.size} peer(s)"
+                when {
+                    found.isNotEmpty() -> "Found ${found.size} peer(s)"
+                    candidates.isNotEmpty() ->
+                        "No broadcast reply — showing ${candidates.size} paired device(s) " +
+                            "at their last known address"
+                    else -> "No PC answered — is `afmu serve` running?"
+                }
             )
         }
     }

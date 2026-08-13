@@ -510,7 +510,15 @@ private fun SendCard(
                 peer = peer,
                 selected = peer == state.selectedPeer,
                 canAsk = state.outgoingAuth == null,
-                paired = state.pairedPeers.any { it.lastHost == peer.host && it.lastPort == peer.port },
+                // **Identity decides this, not the address.** Discovery already resolved the
+                // reply to a pairing record via the rolling rid (§6.1) and put the fingerprint
+                // on the peer; an address match is a different, weaker question and it gets
+                // both directions wrong. A paired device that moved to a new IP loses its lock
+                // and is offered "pair" again, and — the one that matters — a stranger sitting
+                // on the address a paired device used to hold is shown a lock and described as
+                // encrypted-and-known, which is precisely the claim we must not make on the
+                // strength of an address (§4.3).
+                paired = peer.fingerprint.isNotEmpty(),
                 onSelect = { viewModel.selectPeer(peer) },
                 onAsk = { viewModel.requestAuthorization(peer) },
                 onPair = { viewModel.pairWithPeer(peer) },
