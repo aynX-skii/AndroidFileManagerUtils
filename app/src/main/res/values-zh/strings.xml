@@ -14,7 +14,7 @@
     <string name="unencrypted_badge">未加密</string>
     <string name="unencrypted_detail">流量是明文 HTTP。同一网络里的任何人都能看到文件名和文件内容。请只在信任的网络里使用。</string>
     <string name="transport_plaintext">未加密</string>
-    <string name="transport_plaintext_detail">流量是明文 HTTP。同一网络里的任何人都能看到文件名和文件内容。请只在信任的网络里使用。</string>
+    <string name="transport_plaintext_detail">流量是明文 HTTP。同一网络里的任何人都能看到文件名和文件内容。请只在信任的网络里使用。手机一次只提供一种协议：明文开着的时候本机不监听加密连接，所以 PC 上的「加密配对」会握手失败 —— 要配对请先打开下面的「只接受加密连接」。</string>
     <string name="transport_unavailable">谁也连不上</string>
     <string name="transport_unavailable_detail">「只接受加密连接」开着，但加密没能就绪，所以所有连接一律拒绝，不会悄悄退回明文。原因见下面的活动日志。</string>
     <string name="transport_encrypted_guests">已加密（含访客）</string>

@@ -15,7 +15,7 @@
     <string name="unencrypted_badge">Unencrypted</string>
     <string name="unencrypted_detail">Traffic is plain HTTP. Anyone on this network can read file names and contents. Use it on networks you trust.</string>
     <string name="transport_plaintext">Plaintext</string>
-    <string name="transport_plaintext_detail">Traffic is plain HTTP. Anyone on this network can read file names and contents. Use it on networks you trust.</string>
+    <string name="transport_plaintext_detail">Traffic is plain HTTP. Anyone on this network can read file names and contents. Use it on networks you trust. This phone serves one protocol at a time: while plaintext is on it is not listening for encrypted connections, so \"Pair securely\" on the PC will fail its handshake — turn on \"Accept encrypted connections only\" below before pairing.</string>
     <string name="transport_unavailable">Nothing can connect</string>
     <string name="transport_unavailable_detail">Encrypted-only is on but encryption could not be set up, so every connection is refused rather than quietly downgraded. See the activity log.</string>
     <string name="transport_encrypted_guests">Encrypted (guests included)</string>

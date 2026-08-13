@@ -309,6 +309,34 @@ class HttpServer(
             val queryStart = target.indexOf('?')
             val rawPath = if (queryStart < 0) target else target.substring(0, queryStart)
             val query = if (queryStart < 0) emptyMap() else parseQuery(target.substring(queryStart + 1))
+            // **Ask the table again, for every request.** The fingerprint was verified in the
+            // handshake and cannot change for the life of this connection, so re-reading costs
+            // nothing in trust: the only thing that changes is the table's answer — and it
+            // changes in both directions.
+            //
+            //  · The moment a pairing is approved. The pairing handshake necessarily runs on a
+            //    not-yet-paired connection, and HTTP connection reuse is the norm (Qt's QNAM
+            //    keeps the socket alive), so the peer's first real request after "allow"
+            //    arrives on *that* connection. Deciding once at handshake time answered it
+            //    with 403 "not paired" — a pairing that plainly succeeded, refused on its very
+            //    first use, with nothing in either log to explain it.
+            //  · The moment a device is unpaired. A connection it already holds should stop
+            //    working there and then, not whenever it happens to close.
+            val livePaired = when {
+                tlsPeerFp.isEmpty() -> ""
+                peers?.isPaired(tlsPeerFp) == true -> tlsPeerFp
+                else -> ""
+            }
+            if (livePaired.isNotEmpty() && pairedPeer.isEmpty()) {
+                // Same reasoning as the handshake path: a completed v2 connection is proof this
+                // peer speaks v2, so it never falls back to plaintext (§8.2 stage 2).
+                peers?.setPinned(livePaired, true)
+                log("$remoteHost has just finished pairing; this connection is now paired")
+            } else if (livePaired.isEmpty() && pairedPeer.isNotEmpty()) {
+                log("$remoteHost was unpaired; this connection can now do nothing but pair")
+            }
+            pairedPeer = livePaired
+
             val request = Request(
                 method, decode(rawPath), query, headers, input, remoteHost, pairedPeer,
                 isTls = socket !== raw,

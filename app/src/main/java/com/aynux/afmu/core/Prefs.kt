@@ -10,26 +10,50 @@ class Prefs(context: Context) {
     private val sp = context.getSharedPreferences("afmu", Context.MODE_PRIVATE)
 
     init {
-        settleGuestMode()
+        settleDefaults()
     }
 
     /**
-     * Decides guest mode once, on the very first run after this version lands, and writes the
-     * answer down (§9).
+     * Decides guest mode **and** legacy plaintext once, on the very first run after this
+     * version lands, and writes both answers down (§9.5, §8.2 stage 3).
      *
      * Off on a fresh install — the draft asks for that and it is right, a password does not
      * stop a man in the middle. On for an upgrade — someone already using the browser
      * interface must not find it silently stops opening one day with nothing to point at.
      * That is the same class of problem as silently swapping the key pair.
      *
+     * The two settings get the **same** answer, and that is not a coincidence: with guest mode
+     * off, a plaintext connection can reach nothing at all — [HttpServer] answers every
+     * unpaired plaintext request with 403 (§9.3), and an unpaired peer is the only kind a
+     * plaintext connection can carry, since pairing needs a certificate. So "plaintext on,
+     * guest off" is a server that listens and serves nobody, while [setUpTls] declines to
+     * build the TLS stack precisely *because* plaintext is on. That combination was the
+     * default on a fresh install, and it locked the phone out of both protocols at once:
+     * v1 refused by the guest gate, v2 impossible because nothing was listening for TLS.
+     *
      * Deciding it here rather than in a getter's default matters: [token] mints itself on
      * first read, so "does the file have keys in it" gives a different answer depending on
-     * what got read first. A one-time decision at construction has no such ordering.
+     * what got read first. A one-time decision at construction has no such ordering — and
+     * both keys are decided from one reading of the file, before either is written, so the
+     * first write cannot make the second decision see a "non-empty" file.
      */
-    private fun settleGuestMode() = synchronized(TOKEN_LOCK) {
-        if (sp.contains(KEY_GUEST_MODE)) return@synchronized
-        val upgrading = sp.all.isNotEmpty()
-        sp.edit().putBoolean(KEY_GUEST_MODE, upgrading).apply()
+    private fun settleDefaults() = synchronized(TOKEN_LOCK) {
+        val hasGuest = sp.contains(KEY_GUEST_MODE)
+        val hasPlaintext = sp.contains(KEY_ALLOW_PLAINTEXT)
+        if (hasGuest && hasPlaintext) return@synchronized
+
+        // Guest mode, once settled, *is* the record of "was this an upgrade" — so an install
+        // that already settled it (a build that shipped before this one) reuses that answer
+        // instead of re-deriving it from a file it has since written to.
+        val upgrading = when {
+            hasGuest -> sp.getBoolean(KEY_GUEST_MODE, false)
+            else -> sp.all.keys.any { it != KEY_ALLOW_PLAINTEXT }
+        }
+
+        val edit = sp.edit()
+        if (!hasGuest) edit.putBoolean(KEY_GUEST_MODE, upgrading)
+        if (!hasPlaintext) edit.putBoolean(KEY_ALLOW_PLAINTEXT, upgrading)
+        edit.apply()
     }
 
     var port: Int
@@ -67,12 +91,12 @@ class Prefs(context: Context) {
      * With this off, a connection whose first byte is not `0x16` is dropped without any HTTP
      * response at all — this port then effectively only listens for TLS.
      *
-     * Default on, while the draft says default off: that is §8.2 stage 3. Encryption has only
-     * just landed and the Linux client is the only thing that speaks it, so turning it off
-     * today would mean nothing can connect.
+     * Off on a fresh install, on when upgrading — decided once in [settleDefaults], for the
+     * reasons spelled out there. The fallback below is only ever reached if that never ran;
+     * it fails towards encryption (§8.1 rule 1) rather than towards a silent downgrade.
      */
     var allowLegacyPlaintext: Boolean
-        get() = sp.getBoolean(KEY_ALLOW_PLAINTEXT, true)
+        get() = sp.getBoolean(KEY_ALLOW_PLAINTEXT, false)
         set(value) = sp.edit().putBoolean(KEY_ALLOW_PLAINTEXT, value).apply()
 
     /**
@@ -95,7 +119,7 @@ class Prefs(context: Context) {
      * man-in-the-middle protection is discarded. Over HTTPS it stops passive sniffing, and
      * that is all it claims.
      *
-     * Off on a fresh install, on when upgrading — decided once in [settleGuestMode]. Ask
+     * Off on a fresh install, on when upgrading — decided once in [settleDefaults]. Ask
      * [guestModeActive] rather than this, so zero-trust mode is honoured.
      */
     var guestMode: Boolean
