@@ -14,7 +14,7 @@ token，就点「请求授权」让对方在自己屏幕上确认，广播发现
 |------|------|
 | Android App（服务端 + 客户端 + 浏览器界面） | ✅ 已完成 |
 | 传输协议规范 | ✅ [docs/PROTOCOL.md](docs/PROTOCOL.md) |
-| 加密协议 v2（零信任网络） | ✅ 已落地：[docs/PROTOCOL.md](docs/PROTOCOL.md) 第二部分。身份、配对表、双向 TLS、扫码与 SAS 配对、滚动 rid、访客模式全部完成。Linux ↔ Linux 全程实测跑通；**Android 侧的握手待真机验证** |
+| 加密协议 v2（零信任网络） | ✅ 已落地：[docs/PROTOCOL.md](docs/PROTOCOL.md) 第二部分。身份、配对表、双向 TLS、扫码与 SAS 配对、滚动 rid、访客模式全部完成。**两端真机实测跑通**（Android 侧：OPPO PFZM10 / Android 15，密钥落在 TEE） |
 | Linux 桌面客户端（Qt 6，服务端 + 客户端） | ✅ 已完成，单独一个仓库：[aynX-skii/afmu-linux](https://github.com/aynX-skii/afmu-linux) |
 | Linux 命令行客户端 | ❌ 不做了，理由见 [docs/LINUX-CLIENT.md](docs/LINUX-CLIENT.md) 开头 |
 
@@ -110,21 +110,42 @@ app/src/main/java/com/aynux/afmu/
 │   ├── HttpInput.kt             带缓冲的流读取器（协议行 + 按分隔符拷贝）
 │   ├── WebUi.kt                 内置网页界面（单文件、无外链资源）
 │   ├── Discovery.kt             UDP 广播发现：应答 + 探测
-│   ├── AuthRequests.kt          「PC 请求连接」的待决状态机（单请求 / 冷却 / 超时）
+│   ├── AuthRequests.kt          待决状态机：v1 授权 + v2 配对（共用一个位置）
+│   ├── AuthThrottle.kt          token 猜错的指数退避（§2.2）
+│   ├── DownloadTicket.kt        短时、绑路径的下载券，顶替 ?token=（§2.5）
 │   ├── PairPayload.kt           afmu://pair 二维码载荷的解析与拼装
-│   ├── PeerClient.kt            出站客户端：把文件推到 PC
-│   ├── Storage.kt               存储根、路径越界检查、三种写入兜底
+│   ├── PeerClient.kt            出站客户端：推文件到 PC、带续传地拉取
+│   ├── Storage.kt               存储根、路径越界检查、三种写入兜底、续传残片
 │   ├── Bridge.kt                服务与发现的单一持有者，UI/Service 共享状态
 │   ├── NetUtils.kt              本机地址、广播地址、网络类型
-│   ├── Prefs.kt                 设置持久化（token、端口、设备名、语言…）
-│   └── LocaleHelper.kt          按设置包装 Context，实现中英切换
+│   ├── Prefs.kt                 设置持久化（token、端口、设备名、语言、三个开关…）
+│   ├── LocaleHelper.kt          按设置包装 Context，实现中英切换
+│   ├── ProtocolConstants.kt     ⚙ 由 docs/constants.json 生成，别手改
+│   │
+│   │                            ── 以下是 v2（零信任）那一层 ──
+│   ├── Identity.kt              设备身份：AndroidKeyStore 里的 EC P-256 + 自签证书
+│   ├── Tls.kt                   双向 TLS：指纹钉扎的 TrustManager / KeyManager
+│   ├── PeerStore.kt             配对表（进程内唯一），v2 的访问控制列表本身
+│   ├── Peers.kt                 配对表的记录类型与编解码
+│   ├── PairSas.kt               8 位比对码，commit-reveal 绑定会话随机数（§4.2.2）
+│   ├── RollingId.kt             发现应答里的滚动 rid，不再广播设备名（§6.1）
+│   ├── Base32.kt                指纹的展示编码（去掉 I/O 的字母表）
+│   └── Hex.kt                   严格 hex 解码：只认 ASCII，不合法就整串作废
 ├── service/TransferService.kt   前台服务 + WifiLock/MulticastLock/WakeLock + 授权通知
 └── ui/
     ├── MainScreen.kt            Compose 主界面 + 授权确认弹窗
+    ├── AppLocale.kt             语言状态，切换后触发界面重建
+    ├── Theme.kt                 配色与排版
     └── ScannerScreen.kt         扫码取景框（CameraX 取帧，zxing-core 解码）
 docs/
-├── PROTOCOL.md                  ★ 传输协议规范（实现 Linux 端的依据）
-└── LINUX-CLIENT.md              ★ Linux 端实现说明（架构 + 验证清单）
+├── PROTOCOL.md                  ★ 传输协议规范（v1 线格式 + v2 加密与身份）
+├── LINUX-CLIENT.md              ★ Linux 端实现说明（架构 + 验证清单）
+└── constants.json               ★ 两端协议常量的唯一真源
+tools/gen_constants.py           从 constants.json 生成两端的常量文件
+tests/
+├── conformance.py               v1 黑盒一致性套件（两端都必须过）
+├── conformance_v2.py            v2 黑盒一致性套件（mTLS + 配对门禁 + SAS）
+└── README.md                    怎么跑、覆盖什么、已知偏差
 ```
 
 ## 构建
@@ -140,12 +161,13 @@ docs/
 | minSdk | 26（Android 8.0） |
 | JDK | 26 可用 |
 
-仓库里没有 `gradle/wrapper/gradle-wrapper.jar`（二进制不入库）。Android Studio 打开项目
-会自动补上；命令行的话先生成一次 wrapper，之后正常用：
+`gradle/wrapper/gradle-wrapper.jar` **在仓库里**（Gradle 官方现在也是这么建议的：
+wrapper 的作用就是「clone 下来立刻能编，不用先装对版本的 Gradle」，不提交它等于
+把这件事又推回给使用者）。所以直接用：
 
 ```bash
-gradle wrapper --gradle-version 9.5.0    # 只需一次
 ./gradlew :app:assembleDebug
+./gradlew :app:testDebugUnitTest    # 纯 JVM 单元测试，不需要设备或模拟器
 ```
 
 > AGP 9 起 Kotlin 支持内置。如果在 `plugins {}` 里再写 `org.jetbrains.kotlin.android`，
@@ -154,11 +176,27 @@ gradle wrapper --gradle-version 9.5.0    # 只需一次
 
 ## 安全边界
 
-明确说清楚，免得误用：
+**有两套，取决于设置里那个开关。** 先说清楚哪套是哪套，免得误用：
 
-- 传输是**明文 HTTP**，token 是 10 位随机字符串，作用是防止同一局域网里的其他人
-  误连或顺手翻看。**它不对抗嗅探**。
-- 只应该在你信任的网络（家里、自己的热点）上开启服务，不要在公共 Wi-Fi 上开着。
+| | v2（加密） | v1（明文） |
+|---|---|---|
+| 传输 | TLS 1.3 双向认证，自签证书 + SPKI 指纹钉扎 | 明文 HTTP |
+| 凭什么信对面 | 对方持有配对表里那把私钥 | 10 位共享 token |
+| 挡得住嗅探吗 | 挡得住 | **挡不住** |
+| 挡得住中间人吗 | 挡得住（扫码带指纹，或用户比对 8 位 SAS） | 挡不住 |
+| 什么网络能开 | 任意，包括公共 Wi-Fi —— v2 存在的目的就是这个 | 只在你信任的网络 |
+| 谁在用 | 全新安装的默认 | 从旧版本升级上来的默认 |
+
+设置页上「只接受加密连接」那个开关决定跑哪一套，界面上常驻显示当前实际状态。
+细节见 [docs/PROTOCOL.md](docs/PROTOCOL.md) 第二部分，那里有完整的威胁模型
+（§1）和「加密之后还剩什么泄露」（§10）。
+
+> **全新安装默认只加密、访客模式默认关。** 升级安装保持原样（明文 + 浏览器界面），
+> 否则升一次级浏览器界面就打不开了，而且没有任何提示。两个默认值在
+> `Prefs.settleDefaults()` 里一次定下来，Linux 端 `Config::load` 用同一套判据。
+
+下面这些两套都成立：
+
 - 所有路径参数都经过 canonicalize + 根目录白名单校验，拿到 token 也不能读取
   白名单之外的文件（`Storage.resolve()`）。
 - 上传的文件名会被剥掉路径部分并过滤特殊字符（`.` 和 `..` 也挡掉），防止路径穿越。
@@ -169,7 +207,9 @@ gradle wrapper --gradle-version 9.5.0    # 只需一次
   而不是请求参数。整个功能可以在设置里关掉。
 - 确认码是**请求方生成、两端同时显示**的。局域网里任何人都能让手机弹这个窗，
   这四位是用户唯一能分辨「弹的是不是我刚点的那一下」的依据。
-- 二维码里是明文 token，扫码等价于把 PC 的访问权交出去，别截图外发。
+- 二维码：**v1 的码里是明文 token**，扫码等价于把 PC 的访问权交出去，别截图外发；
+  **v2 的码里只有公钥指纹，没有任何秘密**，所以它可以放心当链接传播
+  （`afmu://pair?…`），代价是配对时要有人比对 8 位 SAS。
 - 「允许写入」开关关掉后，上传/建目录/删除一律 403。
 - **删除根目录本身一律 403**。根目录代表整个存储卷，`recursive=1` 删它是不可逆的灾难；
   根目录里的单个文件和子目录仍然可以正常删除。
@@ -180,8 +220,21 @@ gradle wrapper --gradle-version 9.5.0    # 只需一次
 ## 已知限制
 
 - 只支持 IPv4。
-- 不支持 HTTPS（局域网自签证书体验太差，取舍如此）。
-- 没有断点续传的**上传**（下载有 Range 续传）。
+- **浏览器界面只有 v1 那一套**（访客模式 + 密码认证）。浏览器不会出示客户端证书，
+  自签的服务端证书又只会弹一个吓人的警告，点过去的那一刻中间人防护就没了。
+  这不是没做，是做不到 —— 理由写在 `Prefs.guestMode` 的注释和 PROTOCOL.md §9。
+- **手机当服务端时一次只提供一种协议**（明文或加密，由开关决定），不像 Linux 端
+  能在一个端口上同时服务两者。原因是 Android 的 `SSLSocketFactory` 缺了那个
+  「把已读掉的首字节还回去」的重载，首字节分流没法实现（PROTOCOL.md §5.3）。
+- 没有断点续传的**上传**。下载两个方向都有：手机当服务端时响应 `Range`，
+  手机当客户端从 PC 拉取时也会带 `Range` 续传。
 - 大量小文件逐个传输，没有打包优化。
 - 手机端的远程浏览器不能递归拉取子目录，「Pull all」只作用于当前目录。
 - 网页界面的批量下载是逐个触发浏览器下载，浏览器可能会问一次「是否允许多个下载」。
+
+## 许可证
+
+[LGPL-3.0](COPYING.LESSER)（在 [GPL-3.0](COPYING) 之上附加权限）。
+
+协议规范本身（`docs/PROTOCOL.md`）欢迎照着写第三方实现 —— 那是它存在的目的，
+`tests/` 下两套一致性套件就是给这种实现用的验收标准。

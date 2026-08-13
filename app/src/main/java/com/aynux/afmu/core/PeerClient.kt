@@ -103,7 +103,21 @@ class PeerClient(private val context: Context) {
             ?: throw IOException("peer reported success but saved no file")
     }
 
-    /** Pulls a file from the peer into this phone's inbox. */
+    /**
+     * Pulls a file from the peer into this phone's inbox, resuming an interrupted attempt
+     * where it left off (PROTOCOL.md §3.3).
+     *
+     * The leftover `.afmu-part` is the state; there is nothing to remember between runs.
+     * Three answers mean it cannot be built on, and each restarts from zero rather than
+     * appending onto bytes that do not line up:
+     *
+     *  - **200** — the peer ignored `Range` and is sending the whole file from the start;
+     *  - **206 with the wrong offset** — it granted a range, but not the one we asked for;
+     *  - **416** — the leftover is already at or past the file's length, so it belongs to
+     *    some earlier, different version of that path. Stale, not finished.
+     *
+     * Only that last one costs a second request, and only in the rare case.
+     */
     fun download(
         peer: Discovery.Peer,
         token: String,
@@ -111,38 +125,82 @@ class PeerClient(private val context: Context) {
         prefs: Prefs,
         onProgress: (received: Long, total: Long) -> Unit = { _, _ -> },
     ): String {
+        val fallbackName = remotePath.substringAfterLast('/')
+        return Storage.createResumableInboxSink(context, prefs, fallbackName, remotePath)
+            .use { destination ->
+                var connection = openDownload(peer, token, remotePath, destination.existingBytes)
+                if (connection.responseCode == 416) {
+                    // Stale leftover. Throw it away and ask again from the top — the retry is
+                    // unconditional, so a peer that answers 416 to a plain request too will
+                    // surface as the error below rather than as a silent empty file.
+                    connection.disconnect()
+                    destination.restart()
+                    connection = openDownload(peer, token, remotePath, 0L)
+                }
+                if (connection.responseCode !in 200..299) {
+                    throw IOException("peer refused: HTTP ${connection.responseCode}")
+                }
+
+                // 200 to a request that carried a Range means the peer is starting over, so
+                // whatever is on disk must go. Same when the granted range does not begin
+                // where we asked: appending would splice two unrelated offsets together.
+                var alreadyHave = destination.existingBytes
+                if (alreadyHave > 0) {
+                    val granted = rangeStartOf(connection.getHeaderField("Content-Range"))
+                    if (connection.responseCode != 206 || granted != alreadyHave) {
+                        destination.restart()
+                        alreadyHave = 0L
+                    }
+                }
+
+                // Content-Length describes what is still coming; the bar wants the whole file.
+                val remaining = connection.contentLengthLong
+                val total = if (remaining >= 0) alreadyHave + remaining else -1L
+                var received = alreadyHave
+                onProgress(received, total)
+
+                connection.inputStream.use { input ->
+                    val buffer = ByteArray(CHUNK)
+                    while (true) {
+                        val n = input.read(buffer)
+                        if (n <= 0) break
+                        destination.stream.write(buffer, 0, n)
+                        received += n
+                        onProgress(received, total)
+                    }
+                }
+                // A peer that hangs up mid-file ends the stream cleanly as far as read() is
+                // concerned. Committing on a short read would pass half a file off as the
+                // whole one — so this throws, and the partial survives for the next attempt.
+                if (total >= 0 && received != total) {
+                    throw IOException("download truncated: got $received of $total bytes")
+                }
+                destination.commitAs(
+                    HttpServer.extractParameter(
+                        connection.getHeaderField("Content-Disposition").orEmpty(), "filename"
+                    )
+                )
+                destination.displayPath
+            }
+    }
+
+    private fun openDownload(
+        peer: Discovery.Peer,
+        token: String,
+        remotePath: String,
+        from: Long,
+    ): HttpURLConnection {
         val connection = open(peer, "download", token, mapOf("path" to remotePath), "GET")
         connection.connectTimeout = CONNECT_TIMEOUT
         connection.readTimeout = UPLOAD_TIMEOUT
-        if (connection.responseCode !in 200..299) {
-            throw IOException("peer refused: HTTP ${connection.responseCode}")
-        }
-        val total = connection.contentLengthLong
-        val name = HttpServer.extractParameter(
-            connection.getHeaderField("Content-Disposition").orEmpty(), "filename"
-        ) ?: remotePath.substringAfterLast('/')
+        if (from > 0) connection.setRequestProperty("Range", "bytes=$from-")
+        return connection
+    }
 
-        return Storage.createInboxSink(context, prefs, name).use { destination ->
-            var received = 0L
-            connection.inputStream.use { input ->
-                val buffer = ByteArray(CHUNK)
-                while (true) {
-                    val n = input.read(buffer)
-                    if (n <= 0) break
-                    destination.stream.write(buffer, 0, n)
-                    received += n
-                    onProgress(received, total)
-                }
-            }
-            // A peer that hangs up mid-file ends the stream cleanly as far as read() is
-            // concerned. Committing on a short read would pass half a file off as the whole
-            // one; leaving `use` without commit() deletes the .afmu-part instead.
-            if (total >= 0 && received != total) {
-                throw IOException("download truncated: got $received of $total bytes")
-            }
-            destination.commit()
-            destination.displayPath
-        }
+    /** First byte of `bytes <start>-<end>/<total>`, or -1 when the header is unusable. */
+    private fun rangeStartOf(contentRange: String?): Long {
+        val spec = contentRange?.trim()?.removePrefix("bytes")?.trim() ?: return -1L
+        return spec.substringBefore('-').trim().toLongOrNull() ?: -1L
     }
 
     /**

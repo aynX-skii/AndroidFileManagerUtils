@@ -1,0 +1,64 @@
+name: CI
+
+# 两个实现不许漂移，而最容易漂的那次提交正是「只改了一端」的那次。
+# 这个 workflow 的作用就是让那次提交在合并前先红一下。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # 纯 JVM 单元测试：base32、SAS、滚动 rid、hex、配对表编解码、TLS 钉扎。
+  # 覆盖的正是那些「算错了不会抛异常，只会安静地表现成功能没了」的东西，
+  # 所以它们全都刻意不依赖 Android，能在普通 JVM 上跑（见各测试类的注释）。
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          # AGP 9 要 17 以上；这里取 LTS。本机用 26 也编得过（见 README「构建」）。
+          java-version: "21"
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: 单元测试
+        run: ./gradlew :app:testDebugUnitTest
+
+      - name: 编译 APK
+        run: ./gradlew :app:assembleDebug
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unit-test-report
+          path: app/build/reports/tests/
+
+  # 两端常量必须逐字一致，机制是 docs/constants.json 生成两份代码。
+  # 手改了生成物、或者改了 JSON 忘了重新生成，都会在这里被抓住 ——
+  # 而这类漂移在运行时的表现是「同一个网络里两台设备行为不同」，
+  # 排查时第一反应是网络问题，不会有人想到常量。
+  generated-constants:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: android
+
+      # Linux 端的 ProtocolConstants.h 由同一份 JSON 生成，一起取来才验得全。
+      - uses: actions/checkout@v4
+        with:
+          repository: aynX-skii/afmu-linux
+          path: afmu-linux
+          fetch-depth: 1
+
+      - name: 比对生成结果
+        working-directory: android
+        run: |
+          python3 tools/gen_constants.py --check \
+            --linux ../afmu-linux/src/ProtocolConstants.h
