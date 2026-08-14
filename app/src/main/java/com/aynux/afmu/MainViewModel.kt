@@ -244,7 +244,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         // we last showed: merging the state list into itself means a peer that
                         // was just unpaired never leaves it, and sending to that stale row
                         // would go out as plaintext + token to the device just revoked.
-                        peers = mergePeers(discovered, paired.toPeers()),
+                        //
+                        // forgetUnpaired() closes the other half of that: the row itself stays
+                        // (the device is still on the network, you can still send to it), but
+                        // it must stop claiming to be paired the moment the record is gone.
+                        peers = mergePeers(discovered.forgetUnpaired(paired), paired.toPeers()),
                     )
                 }
             }
@@ -262,6 +266,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             fingerprint = r.fp,
         )
     }
+
+    /**
+     * Drops fingerprints the pairing table no longer holds.
+     *
+     * A non-empty fingerprint means one thing everywhere downstream: *this device is in our
+     * pairing table*. The send list draws its lock from it and hides the "pair" button behind
+     * it. But `discovered` is a snapshot of what a scan heard, and identify() resolved those
+     * fingerprints back then — unpair a device and the snapshot still carries its fingerprint,
+     * so the row keeps claiming to be paired and encrypted until the next scan. Nothing else
+     * expires it: the whole point of the rolling rid is that a fingerprint survives address
+     * changes, and it survives revocation just as happily.
+     */
+    private fun List<Discovery.Peer>.forgetUnpaired(paired: List<PeerRecord>): List<Discovery.Peer> =
+        map {
+            if (it.fingerprint.isEmpty() || paired.any { r -> r.fp == it.fingerprint }) it
+            else it.copy(fingerprint = "")
+        }
 
     /**
      * Discovery wins on collisions: a live reply says where the device is *now*, while a
@@ -953,7 +974,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             // (pairing anything, or a rid refreshing an address) resurrects the previous
             // scan's results and throws this one away.
             discovered = found
-            val candidates = mergePeers(found, _state.value.pairedPeers.toPeers())
+            val paired = _state.value.pairedPeers
+            val candidates = mergePeers(found.forgetUnpaired(paired), paired.toPeers())
             _state.update { current ->
                 val selected = current.selectedPeer
                     ?: candidates.firstOrNull { "${it.host}:${it.port}" == prefs.lastPeer }
@@ -1040,7 +1062,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // Nothing answered does not mean there is nobody: broadcast is filtered on plenty of
         // networks, and a paired device's stored address usually still works.
         discovered = found
-        val candidates = mergePeers(found, _state.value.pairedPeers.toPeers())
+        val paired = _state.value.pairedPeers
+        val candidates = mergePeers(found.forgetUnpaired(paired), paired.toPeers())
         val peer = candidates.firstOrNull { "${it.host}:${it.port}" == prefs.lastPeer }
             ?: candidates.firstOrNull()
         _state.update { it.copy(scanning = false, peers = candidates, selectedPeer = peer) }
